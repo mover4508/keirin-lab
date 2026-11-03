@@ -60,3 +60,13 @@ function approve_(body) {
     lock.releaseLock();
   }
 }
+
+// 権限の確認用。承認したコードが使うサービス（スプレッドシート・トリガー・キャッシュ）の権限を、
+// このプロジェクトに付けるためのもの。1回だけ手で実行して「許可」する。
+function authorize() {
+  var id = PropertiesService.getScriptProperties().getProperty("SHEET_ID");
+  if (id) SpreadsheetApp.openById(id).getName();
+  ScriptApp.getProjectTriggers();
+  CacheService.getScriptCache();
+  Logger.log("権限OK");
+}
