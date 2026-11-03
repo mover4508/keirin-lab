@@ -2,8 +2,10 @@
 // 使うのは、貼られた出走表・オッズ、自前の蓄積データ、参照データ（refdata.js）だけ。
 "use strict";
 (function (root) {
-const _REF = (typeof REF !== "undefined" ? REF : null) || (typeof require !== "undefined" ? require("./refdata.js").REF : null);
-const _bankClass = (typeof bankClass !== "undefined" ? bankClass : null) || (typeof require !== "undefined" ? require("./refdata.js").bankClass : null);
+// 参照データは使うときに取りにいく（Google Apps Scriptではファイルの読み込み順が決まらないため）
+let __ref = null;
+function refd() { if (!__ref) __ref = (typeof REF !== "undefined" ? REF : null) || (typeof require !== "undefined" ? require("./refdata.js").REF : null); return __ref; }
+function _bankClass(len) { return len <= 335 ? 333 : len >= 500 ? 500 : 400; }
 
 /* ========== エンジン一覧 ==========
    per: 選手ごとの値を出し、重みを学習するエンジン
@@ -94,7 +96,7 @@ function daysBetween(raceDate, mmdd) {
 
 /* ========== 36エンジンの計算 ========== */
 function computeEngines(race, acc, opts) {
-  const REFD = _REF, R = race.riders, n = R.length, LI = lineInfo(race);
+  const REFD = refd(), R = race.riders, n = R.length, LI = lineInfo(race);
   const v = REFD.venues[race.meta.venue] || null;
   const bc = v ? _bankClass(v.len) : 400;
   const kim = v && v.dome ? REFD.kimariteDome1 : REFD.kimarite1[bc];
@@ -206,7 +208,7 @@ function computeEngines(race, acc, opts) {
     // E22 カント：きついほど差し・捲り、緩いほど逃げ
     raw.E22[i] = v ? (s.sashi + s.makuri - s.nige) * (v.cant - 32) / 3 : 0;
     // E23 場の先行有利度
-    raw.E23[i] = (s.nige - s.sashi) * (venueNige - _REF.nigeNational) / 5;
+    raw.E23[i] = (s.nige - s.sashi) * (venueNige - refd().nigeNational) / 5;
     // E24 地元
     const vp = v ? v.pref : null;
     raw.E24[i] = vp && r.pref === vp ? 1 : (vp && REFD.area[r.pref] && REFD.area[r.pref] === REFD.area[vp] ? 0.3 : 0);
@@ -216,7 +218,7 @@ function computeEngines(race, acc, opts) {
     let ws = 0;
     if (!(v && v.dome)) {
       if (cond.weather === "雨") ws += 0.5 * s.nige - 0.5 * s.makuri;
-      const tbl = cond.windDir && _REF.wind[cond.windDir];
+      const tbl = cond.windDir && refd().wind[cond.windDir];
       if (tbl) {
         const f = tbl[bc] || tbl.all || {};
         const strong = cond.windStr === "強" ? 1.5 : 1;
@@ -322,7 +324,7 @@ function perms(race, comb, model, LI) {
 
 /* ========== 区分（堅め・標準・荒れ） ========== */
 function classify(race, model, P) {
-  const cat = category(race), base = _REF.popular[cat], th = model.th;
+  const cat = category(race), base = refd().popular[cat], th = model.th;
   const odds = Object.values(race.odds || {});
   const kf = kindFactor(race);
   let ratio, why;
@@ -459,7 +461,7 @@ function learn(race, result, model, acc, stats) {
   // 蓄積データ（選手・ライン・対戦・場・補正値）
   const LI = lineInfo(race), P = perms(race, race.comb, model, LI), p3 = {};
   P.forEach(x => x.c.forEach(no => p3[no] = (p3[no] || 0) + x.p));
-  const v = _REF.venues[race.meta.venue], bc = v ? _bankClass(v.len) : 400;
+  const v = refd().venues[race.meta.venue], bc = v ? _bankClass(v.len) : 400;
   const fin = Object.fromEntries((result.finishers || []).map(f => [f.no, f]));
   race.riders.forEach(r => {
     const id = riderId(r), top3 = order.includes(r.no) ? 1 : 0;

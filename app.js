@@ -16,13 +16,18 @@ function stamp() { const d = new Date(), p = x => String(x).padStart(2, "0"); re
 /* ========== 保存（この端末のブラウザ） ========== */
 const KEY = "keirin-lab-v1";
 let S;
-function fresh() { return { schema: 1, model: K.freshModel(), acc: K.freshAcc(), races: [], stats: { races: 0, hits: 0, invested: 0, returned: 0, lossStreak: 0 }, metaLog: [] }; }
+function fresh() { return { schema: 1, model: K.freshModel(), acc: K.freshAcc(), races: [], stats: { races: 0, hits: 0, invested: 0, returned: 0, lossStreak: 0 }, metaLog: [],
+  clientId: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2)), join: null, outbox: [], shared: null, ownerToken: "" }; }
 function load() {
   try { const o = JSON.parse(localStorage.getItem(KEY) || "null"); S = o && o.schema === 1 ? Object.assign(fresh(), o) : fresh(); }
   catch (e) { S = fresh(); }
 }
+function headerText() {
+  const sh = S.shared && S.shared.stats ? `みんなの学習 ${S.shared.stats.races}R` : "この端末の学習";
+  return `${sh} ・ 自分 ${S.races.length}レース`;
+}
 function save() {
-  try { localStorage.setItem(KEY, JSON.stringify(S)); $("sync").textContent = `この端末に保存 ・ ${S.races.length}レース`; }
+  try { localStorage.setItem(KEY, JSON.stringify(S)); $("sync").textContent = headerText(); }
   catch (e) { $("sync").textContent = "保存できませんでした（容量不足の可能性）。「全データを保存」でファイルに残してください"; }
 }
 
@@ -92,7 +97,9 @@ $("b-predict").onclick = () => {
     marks: r.riders.map(x => ({ no: x.no, mark: x.mark })),   // 予想印は記録だけ（予想には使わない）
     pasted: $("in-paste").value, status: "pending"
   };
-  K.predict(race, S.model, S.acc, { mode: race.mode });
+  const useShared = !!(S.shared && S.shared.model);
+  K.predict(race, useShared ? S.shared.model : S.model, useShared ? S.shared.acc : S.acc, { mode: race.mode });
+  race.modelSource = useShared ? `みんなの学習 v${S.shared.model.ver}（${S.shared.stats.races}R・${new Date(S.shared.builtAt).toLocaleString("ja-JP")}時点）` : "この端末の学習";
   race.lockedAt = new Date().toISOString(); race.fp = fingerprint(race);
   S.races.unshift(race); save();
   $("b-predict").disabled = true; draft = null;
@@ -103,7 +110,7 @@ function predCard(r) {
   const m = r.meta;
   return `<div class="card"><div class="bethead"><h2>${esc(m.venue || "")} ${m.raceNo || ""}R ・ ${esc(m.grade || "")} ・ ${r.riders.length}車</h2>${clsPill(r.cls)}</div>
   <p class="note">区分の根拠：${esc(r.clsWhy)}</p>
-  <p class="note">${r.mode === "past" ? "過去レース検証" : "リアルタイム予想"} ・ オッズ：${r.hasOdds ? esc(r.oddsType) : "なし"} ・ モデル v${r.modelVer}</p>
+  <p class="note">${r.mode === "past" ? "過去レース検証" : "リアルタイム予想"} ・ オッズ：${r.hasOdds ? esc(r.oddsType) : "なし"} ・ 使ったモデル：${esc(r.modelSource || ("v" + r.modelVer))}</p>
   <p class="note">予想確定 ${new Date(r.lockedAt).toLocaleString("ja-JP")} ・ 指紋 ${r.fp}（あとから変更できません）</p>
   <h3>買い目 ${r.bets.length}点（${r.bets.length * 100}円）</h3>
   ${r.bets.map(b => `<div class="bet"><div class="bethead">${comboHtml(b.c)}<span class="prob">推定 ${pct(b.p)}${b.odds ? ` ・ ${b.odds}倍` : ""}${b.ev != null ? ` ・ 期待値 ${b.ev.toFixed(2)}` : ""}</span></div>
@@ -152,8 +159,11 @@ $("b-judge").onclick = () => {
   r.status = "done";
   let meta = null;
   if (S.stats.races % 10 === 0) { meta = K.metaLoop(S.races, S.model, S.stats); if (meta) { S.metaLog.unshift(meta); S.metaLog = S.metaLog.slice(0, 50); } }
+  enqueue(r);
   save();
   $("res-out").innerHTML = resultCard(r, meta);
+  if (window.KEIRIN_SHARED_URL && S.join === null) $("join-card").classList.remove("hide");
+  flush();
   sel = null; readRes = null; $("res-card").classList.add("hide"); renderPending();
   $("res-out").scrollIntoView({ behavior: "smooth", block: "start" });
 };
@@ -204,17 +214,20 @@ function renderStats() {
 
 /* ========== 学習タブ ========== */
 function renderLearn() {
-  const m = S.model, g = m.cells["*|*|*"].w, mx = Math.max(...K.PER.map(e => g[e]), 1);
+  const shared = !!(S.shared && S.shared.model);
+  const m = shared ? S.shared.model : S.model, g = m.cells["*|*|*"].w, mx = Math.max(...K.PER.map(e => g[e]), 1);
+  const logs = shared ? (S.shared.metaLog || []) : S.metaLog;
   const groups = [...new Set(K.ENGINES.map(e => e[2]))];
-  $("v-learn").innerHTML = `<div class="card"><h2>モデル v${m.ver}</h2>
+  $("v-learn").innerHTML = `<div class="card"><h2>${shared ? "みんなの学習" : "この端末の学習"} ・ モデル v${m.ver}</h2>
+    ${shared ? `<p class="note">${S.shared.stats.races}レースから学習（${new Date(S.shared.builtAt).toLocaleString("ja-JP")}に作成）。見直しはサーバーが1時間ごとに行います。</p>` : ""}
     <p class="note">集中度β ${m.beta.toFixed(2)} ・ 市場の比重α ${m.alpha.toFixed(2)} ・ スジ決着の補正 ${m.syn.toFixed(2)} ・ 学習率 ${m.lr}（いま${S.stats.lossStreak}連敗。連敗中は自動で下げます）</p>
     <p class="note">区分：1番人気オッズが基準の ${m.th.kataRatio.toFixed(2)} 倍以下で堅め、${m.th.areRatio.toFixed(2)} 倍以上で荒れ</p>
     <p class="note">偶然に振り回されない仕組み：1回の変化は±10%まで ・ データが少ない条件は上の条件の重みと混ぜる ・ 10Rごとに過去30Rで見直し、悪くなっていたら最良版に戻す</p>
     ${m.best ? `<p class="note">最良版：v${m.best.ver}（平均対数尤度 ${m.best.ll.toFixed(3)}）</p>` : ""}
-    <div class="btns"><button class="btn sub" id="b-meta">今すぐ見直す</button><button class="btn sub" id="b-rollback"${m.best ? "" : " disabled"}>最良版に戻す</button></div><div id="learn-msg"></div></div>
+    <div class="btns${shared ? " hide" : ""}"><button class="btn sub" id="b-meta">今すぐ見直す</button><button class="btn sub" id="b-rollback"${m.best ? "" : " disabled"}>最良版に戻す</button></div><div id="learn-msg"></div></div>
   <div class="card"><h2>36エンジンの重み（全体）</h2><p class="note">「race」はレース全体に効くエンジンで、重みではなく上の集中度・市場の比重・スジ補正で効きます。</p>
     ${groups.map(gp => `<h3>${gp}</h3><div class="tbl"><table><tbody>${K.ENGINES.filter(e => e[2] === gp).map(e => `<tr><td>${e[0]}</td><td>${e[1]}</td><td style="width:38%">${e[3] === "per" ? `<div class="bar"><span style="width:${(g[e[0]] / mx * 100).toFixed(0)}%"></span></div>` : `<span class="note">race</span>`}</td><td class="n">${e[3] === "per" ? g[e[0]].toFixed(2) : ""}</td></tr>`).join("")}</tbody></table></div>`).join("")}</div>
-  <div class="card"><h2>見直しの記録</h2>${S.metaLog.length ? S.metaLog.slice(0, 10).map(e => `<details><summary>${e.race}R時点 ・ v${e.ver}</summary><ul class="log">${e.lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul></details>`).join("") : `<p class="note">10レース照合するごとに自動で見直します（5R以上あれば手動でもできます）。</p>`}</div>`;
+  <div class="card"><h2>見直しの記録</h2>${logs.length ? logs.slice(0, 10).map(e => `<details><summary>${e.race}R時点 ・ v${e.ver}</summary><ul class="log">${e.lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul></details>`).join("") : `<p class="note">10レース照合するごとに自動で見直します（5R以上あれば手動でもできます）。</p>`}</div>`;
   $("b-meta").onclick = () => { const e = K.metaLoop(S.races, S.model, S.stats); if (!e) { msg("learn-msg", "照合済みのレースが5R以上必要です", "warn"); return; } S.metaLog.unshift(e); save(); renderLearn(); msg("learn-msg", "見直しました", "ok"); };
   $("b-rollback").onclick = () => { if (!m.best) return; m.cells = JSON.parse(JSON.stringify(m.best.cells)); ["beta", "alpha", "syn"].forEach(k => m[k] = m.best[k]); m.ver++; S.metaLog.unshift({ at: new Date().toISOString(), race: S.stats.races, ver: m.ver, ll: m.best.ll, lines: [`手動で最良版 v${m.best.ver} に戻した`] }); save(); renderLearn(); msg("learn-msg", "最良版に戻しました", "ok"); };
 }
@@ -247,14 +260,71 @@ function renderSet() {
   $("engine-list").innerHTML = `<table><tbody>${K.ENGINES.map(e => `<tr><td>${e[0]}</td><td>${e[2]}</td><td>${e[1]}</td></tr>`).join("")}</tbody></table>`;
 }
 
+/* ========== みんなの学習（共有学習サーバー） ========== */
+const URL_ = () => window.KEIRIN_SHARED_URL || "";
+function learningItem(r) {
+  return { raceKey: r.rkey, oddsType: r.oddsType, meta: r.meta, riders: r.riders, lineup: r.lineup, odds: r.odds, cond: r.cond,
+    result: { order: r.result.order, pays: r.result.pays, finishers: r.result.finishers } };
+}
+function enqueue(r) { if (!S.outbox.some(x => x.raceKey === r.rkey)) S.outbox.push(learningItem(r)); }
+async function post(body) {
+  const res = await fetch(URL_(), { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(body) });
+  return res.json();
+}
+async function flush() {
+  if (!URL_() || S.join !== true || !S.outbox.length) return null;
+  try {
+    const items = S.outbox.slice(0, 50);
+    const j = await post({ action: "submit", clientId: S.clientId, ownerToken: S.ownerToken || undefined, items });
+    if (j.ok) { S.outbox = S.outbox.slice(items.length); save(); }
+    return j;
+  } catch (e) { return { ok: false, reason: "通信できませんでした。次に開いたときに、もう一度送ります" }; }
+}
+async function pullShared() {
+  if (!URL_()) return { ok: false, reason: "共有学習のサーバーがまだ設定されていません" };
+  try {
+    const res = await fetch(URL_() + "?action=model", { cache: "no-store" });
+    const j = await res.json();
+    if (!j || j.kind !== "shared" || !j.model) return { ok: false, reason: j && j.reason ? j.reason : "共有モデルを読み込めませんでした" };
+    S.shared = { model: j.model, acc: j.acc, stats: j.stats, builtAt: j.builtAt, conflicts: j.conflicts, metaLog: j.metaLog || [] };
+    save();
+    return { ok: true };
+  } catch (e) { return { ok: false, reason: "通信できませんでした。この端末の学習で予想します" }; }
+}
+function renderShare() {
+  const st = S.shared;
+  $("share-status").innerHTML = !URL_() ? "共有学習のサーバーは準備中です。いまは、この端末の学習だけで予想します。"
+    : st ? `みんなの学習：${st.stats.races}レース・モデル v${st.model.ver}（${new Date(st.builtAt).toLocaleString("ja-JP")}に作成）。予想にはこのモデルを使います。${S.outbox.length ? `<br>送信待ち：${S.outbox.length}レース` : ""}`
+    : "まだ共有モデルを読み込んでいません。「今すぐ同期する」を押してください。";
+  $("in-join").value = S.join === true ? "1" : S.join === false ? "0" : "";
+  $("in-owner").value = S.ownerToken || "";
+}
+$("b-join-yes").onclick = () => { S.join = true; save(); $("join-card").classList.add("hide"); flush(); };
+$("b-join-no").onclick = () => { S.join = false; S.outbox = []; save(); $("join-card").classList.add("hide"); };
+$("in-join").onchange = () => { const v = $("in-join").value; S.join = v === "1" ? true : v === "0" ? false : null; if (S.join === false) S.outbox = []; save(); renderShare(); };
+$("in-owner").onchange = () => { S.ownerToken = $("in-owner").value.trim(); save(); };
+$("b-sync").onclick = async () => {
+  msg("sync-msg", "同期しています…", "warn");
+  const a = await flush(), b = await pullShared();
+  msg("sync-msg", [a && (a.ok ? `送信：${a.accepted}レース受け付け${a.rejected && a.rejected.length ? `、${a.rejected.length}レースは受け付けられませんでした（${esc(a.rejected[0].reason)}）` : ""}` : esc(a.reason)), b.ok ? "みんなの学習を読み込みました" : esc(b.reason)].filter(Boolean).join("<br>"), b.ok ? "ok" : "err");
+  renderShare(); save();
+};
+$("b-rebuild").onclick = async () => {
+  if (!URL_()) { msg("owner-msg", "共有学習のサーバーがまだ設定されていません", "err"); return; }
+  msg("owner-msg", "作り直しています…（1分ほどかかることがあります）", "warn");
+  try { const j = await post({ action: "rebuild", ownerToken: S.ownerToken }); msg("owner-msg", j.ok ? `作り直しました：採用 ${j.rebuilt.races}レース・食い違い ${j.rebuilt.conflicts}レース` : esc(j.reason), j.ok ? "ok" : "err"); if (j.ok) await pullShared(); renderShare(); }
+  catch (e) { msg("owner-msg", "通信できませんでした", "err"); }
+};
+
 /* ========== タブ ========== */
 let view = "pred";
 document.querySelectorAll("nav.tabs button").forEach(b => b.onclick = () => { view = b.dataset.v; render(); });
 function render() {
   document.querySelectorAll("nav.tabs button").forEach(b => b.setAttribute("aria-selected", b.dataset.v === view));
   ["pred", "res", "stats", "learn", "set"].forEach(v => $("v-" + v).classList.toggle("hide", v !== view));
-  if (view === "res") renderPending(); if (view === "stats") renderStats(); if (view === "learn") renderLearn(); if (view === "set") renderSet();
+  if (view === "res") renderPending(); if (view === "stats") renderStats(); if (view === "learn") renderLearn(); if (view === "set") { renderSet(); renderShare(); }
 }
 $("in-mode").onchange = modeNote;
 load(); modeNote(); save(); render();
+if (URL_()) { flush(); pullShared().then(() => { $("sync").textContent = headerText(); }); }
 })();
