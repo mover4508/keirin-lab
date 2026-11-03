@@ -59,7 +59,8 @@ let draft = null;
 // 入力欄を空にする（予想を確定したあと自動で。ボタンでもできる）
 function clearInputs(all) {
   $("in-paste").value = "";
-  ["in-weather", "in-winddir", "in-windstr"].forEach(id => $(id).value = "");
+  ["in-weather", "in-winddir", "in-windstr", "in-posttime"].forEach(id => $(id).value = "");
+  wx = null; wxSeq++; msg("wx-msg", "");
   if (all) { draft = null; $("check-card").classList.add("hide"); msg("parse-msg", ""); $("pred-out").innerHTML = ""; }
 }
 $("b-parse").onclick = () => {
@@ -87,7 +88,88 @@ $("b-parse").onclick = () => {
   draft = { mode, parsed: r, oddsAt: new Date().toISOString() };
   msg("parse-msg", `読み取りました：選手${r.riders.length}人・3連単オッズ${Object.keys(r.odds).length}通り${note}`, "ok");
   renderCheck();
+  const pt = (text.match(/発走(?:予定)?(?:時刻)?\s*[：:]?\s*(\d{1,2})[:：](\d{2})/) || []);
+  $("in-posttime").value = pt[1] ? `${pt[1].padStart(2, "0")}:${pt[2]}` : "";
+  const band = (S.timeBand || {})[r.meta.venue];
+  if (band && REF.timeBand[band]) $("in-band").value = band;
+  fetchWeather();
 };
+
+/* ========== 天気の自動取得（例外として、気象データだけ外から取る） ========== */
+let wx = null, wxSeq = 0;
+const WX_DIR = { homeHead: "ホーム向かい風", backHead: "ホーム追い風", crossHB: "横風（ホーム→バック）", crossBH: "横風（バック→ホーム）" };
+function addDays(dateStr, n) { const d = new Date(dateStr + "T00:00:00"); d.setDate(d.getDate() + n); const p = x => String(x).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; }
+// 発走時刻：入力があればそれ、なければ時間帯とレース番号から見積もる
+function postTime(meta) {
+  const v = $("in-posttime").value;
+  if (/^\d{2}:\d{2}$/.test(v)) return { hm: v, est: false };
+  const b = REF.timeBand[$("in-band").value] || REF.timeBand.day;
+  const [h, m] = b.start.split(":").map(Number), t = h * 60 + m + (Math.max(1, Number(meta.raceNo) || 1) - 1) * b.step;
+  return { hm: `${String(Math.floor(t / 60) % 24).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`, est: true, band: b.label, nextDay: t >= 1440 };
+}
+// 風の方角（風が吹いてくる方角、度）を、その場のバンクの向きで言い換える
+function windToBank(fromDeg, headDeg) {
+  const d = ((fromDeg - headDeg + 540) % 360) - 180;
+  if (Math.abs(d) <= 45) return "homeHead";
+  if (Math.abs(d) >= 135) return "backHead";
+  return d > 0 ? "crossHB" : "crossBH";
+}
+function wxJudge(h) {
+  const R = REF.weatherRule, c = h.code;
+  const rainCode = c != null && ((c >= 51 && c <= 67) || (c >= 71 && c <= 77) || (c >= 80 && c <= 86) || c >= 95);
+  return {
+    weather: (h.precip != null && h.precip >= R.rainMm) || rainCode ? "雨" : (h.cloud != null && h.cloud >= R.cloudPct ? "曇" : "晴"),
+    windDir: h.ws != null && h.ws >= R.calmMs && h.wd != null && h.head != null ? windToBank(h.wd, h.head) : "",
+    windStr: h.ws != null && h.ws >= R.strongMs ? "強" : ""
+  };
+}
+async function fetchWeather() {
+  if (!draft) return;
+  const seq = ++wxSeq, m = draft.parsed.meta, v = REF.venues[m.venue], geo = (REF.geo || {})[m.venue];
+  wx = null; $("cond-box").open = true;
+  if (v && v.dome) { msg("wx-msg", `${esc(m.venue)}はドーム（屋内）なので、天気と風は使いません。`, "ok"); return; }
+  if (!m.date || !geo) { msg("wx-msg", "開催日か場が分からないため、天気を取れませんでした。分かれば手で選んでください。", "warn"); return; }
+  const pt = postTime(m), date = pt.nextDay ? addDays(m.date, 1) : m.date, hour = Math.round((Number(pt.hm.slice(0, 2)) * 60 + Number(pt.hm.slice(3))) / 60) % 24;
+  const today = todayStr();
+  if (date > addDays(today, 15)) { msg("wx-msg", "まだ先のレースなので、天気予報がありません。近くなったら「天気を取り直す」を押してください。", "warn"); return; }
+  const FC = "https://api.open-meteo.com/v1/forecast", AR = "https://archive-api.open-meteo.com/v1/archive";
+  // 古い日付は過去データ（再解析）、それ以外は予報。取れなければ、過去の日付に限ってもう片方も試す
+  const bases = date < addDays(today, -80) ? [AR, FC] : date < addDays(today, -6) ? [FC, AR] : [FC];
+  const q = new URLSearchParams({ latitude: geo[0], longitude: geo[1], start_date: date, end_date: date, timezone: "Asia/Tokyo", wind_speed_unit: "ms",
+    hourly: "precipitation,weather_code,cloud_cover,wind_speed_10m,wind_direction_10m" });
+  msg("wx-msg", "天気を取得しています…", "ok");
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 10000);
+  try {
+    let H = null, idx = -1, useArchive = false;
+    for (const base of bases) {
+      try {
+        const res = await fetch(`${base}?${q}`, { signal: ctl.signal, referrerPolicy: "no-referrer", credentials: "omit" });
+        if (!res.ok) continue;
+        const j = await res.json(), h = j && j.hourly;
+        const i = h && Array.isArray(h.time) ? h.time.findIndex(t => t === `${date}T${String(hour).padStart(2, "0")}:00`) : -1;
+        if (i >= 0 && h.wind_speed_10m && h.wind_speed_10m[i] != null) { H = h; idx = i; useArchive = base === AR; break; }
+      } catch (x) { if (ctl.signal.aborted) break; }
+    }
+    if (seq !== wxSeq || !draft) return;
+    if (!H) throw new Error("no data");
+    const num = a => (Array.isArray(a) && Number.isFinite(Number(a[idx])) && a[idx] !== null ? Number(a[idx]) : null);
+    const h = { precip: num(H.precipitation), code: num(H.weather_code), cloud: num(H.cloud_cover), ws: num(H.wind_speed_10m), wd: num(H.wind_direction_10m), head: (REF.homeHead || {})[m.venue] ?? null };
+    const c = wxJudge(h);
+    $("in-weather").value = c.weather; $("in-winddir").value = c.windDir; $("in-windstr").value = c.windStr;
+    wx = { source: useArchive ? "Open-Meteo（過去の観測・再解析）" : "Open-Meteo（予報・直近の解析）", at: new Date().toISOString(), date, hour, postTime: pt.hm, estimated: pt.est, band: pt.band || null, raw: h, auto: c };
+    const dirs = ["北", "北東", "東", "南東", "南", "南西", "西", "北西"], from = h.wd == null ? "" : dirs[Math.round(h.wd / 45) % 8];
+    msg("wx-msg", `${esc(date)} ${String(hour).padStart(2, "0")}時ごろ（${pt.est ? `${esc(pt.band)}の${Number(m.raceNo) || "?"}Rとして見積もった発走 ${esc(pt.hm)}` : `発走 ${esc(pt.hm)}`}）の天気：${c.weather}・${from ? from + "の風" : "風向き不明"} ${h.ws ?? "-"}m/s ・ 降水 ${h.precip ?? "-"}mm ・ 雲 ${h.cloud ?? "-"}%<br>→ ${c.windDir ? WX_DIR[c.windDir] : "風は弱いので向きは使いません"}${c.windStr ? "（強い）" : ""}。下の欄に入れました。違っていれば直してください。`, "ok");
+  } catch (e) {
+    if (seq !== wxSeq) return;
+    msg("wx-msg", "天気を取れませんでした（通信できないか、気象データが混み合っています）。分かれば手で選ぶか、「天気を取り直す」を押してください。", "warn");
+  } finally { clearTimeout(timer); }
+}
+$("b-wx").onclick = () => { if (!draft) { msg("wx-msg", "先に出走表を読み取ってください", "warn"); return; } fetchWeather(); };
+$("in-band").onchange = () => {
+  if (draft && draft.parsed.meta.venue) { S.timeBand = S.timeBand || {}; S.timeBand[draft.parsed.meta.venue] = $("in-band").value; save(); }
+  if (draft && !$("in-posttime").value) fetchWeather();
+};
+$("in-posttime").onchange = () => { if (draft) fetchWeather(); };
 function renderCheck() {
   const r = draft.parsed, m = r.meta;
   $("check-card").classList.remove("hide");
@@ -111,6 +193,7 @@ $("b-predict").onclick = () => {
     meta: r.meta, riders: r.riders, lineup, odds: r.odds,
     oddsType: draft.mode === "past" ? "確定" : "締め切り前", oddsAt: draft.oddsAt,
     cond: { weather: $("in-weather").value || null, windDir: $("in-winddir").value || null, windStr: $("in-windstr").value || null },
+    condSrc: wx ? { ...wx, edited: $("in-weather").value !== wx.auto.weather || $("in-winddir").value !== wx.auto.windDir || $("in-windstr").value !== wx.auto.windStr } : { source: "手入力" },
     marks: r.riders.map(x => ({ no: x.no, mark: x.mark })),   // 予想印は記録だけ（予想には使わない）
     pasted: $("in-paste").value, status: "pending"
   };

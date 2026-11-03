@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://script.google.com https://script.googleusercontent.com; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://script.google.com https://script.googleusercontent.com https://api.open-meteo.com https://archive-api.open-meteo.com; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>競輪3連単ラボ</title>
 <meta name="description" content="チャリロトの出走表とオッズを貼るだけで、36エンジンが3連単を1〜3点予想し、結果と照合して学習します。">
@@ -43,8 +43,19 @@
     <label class="f" for="in-paste">チャリロトの「出走表詳細」と「オッズ表詳細」をまとめて貼り付け
       <textarea id="in-paste" placeholder="出走表とオッズ表のページを、そのままコピーして貼り付けてください"></textarea>
     </label>
-    <details class="cond">
-      <summary>天候と風（分かれば）</summary>
+    <details class="cond" id="cond-box">
+      <summary>天候と風（読み取ると自動で取得）</summary>
+      <div class="row">
+        <label class="f" for="in-band">開催の時間帯<select id="in-band">
+          <option value="morning">モーニング</option>
+          <option value="day" selected>デイ</option>
+          <option value="night">ナイター</option>
+          <option value="midnight">ミッドナイト</option>
+        </select></label>
+        <label class="f" for="in-posttime">発走時刻（分かれば）<input id="in-posttime" type="time"></label>
+      </div>
+      <div class="btns"><button class="btn sub" id="b-wx">天気を取り直す</button></div>
+      <div id="wx-msg"></div>
       <div class="row">
         <label class="f" for="in-weather">天候<select id="in-weather"><option value="">分からない</option><option>晴</option><option>曇</option><option>雨</option></select></label>
         <label class="f" for="in-winddir">風向き<select id="in-winddir">
@@ -56,7 +67,7 @@
         </select></label>
         <label class="f" for="in-windstr">風の強さ<select id="in-windstr"><option value="">ふつう</option><option value="強">強い</option></select></label>
       </div>
-      <p class="note">発走前に分かる天候だけを入れてください。結果ページの天候は使いません。</p>
+      <p class="note">天気は、出走表の開催日・場と、発走時刻（分からなければ時間帯から見積もった時刻）をもとに、気象データ（Open-Meteo）から取ります。風向きは、その競輪場のバンクの向きから「ホーム向かい風」などに直します。取った値は手で直せます。結果ページの天候は使いません。</p>
     </details>
     <div class="btns"><button class="btn" id="b-parse">読み取る</button><button class="btn sub" id="b-clear">入力欄を空にする</button></div>
     <div id="parse-msg"></div>
@@ -147,13 +158,14 @@
       <li>あなたが貼り付けた、チャリロトの出走表と3連単オッズ</li>
       <li>あなたが貼り付けた、KEIRIN.JPの結果（照合と学習にだけ使い、予想には使いません）</li>
       <li>照合済みのレースから積み上げた蓄積データ</li>
-      <li>開発時に調べて固定した参照データ（バンクの長さ・直線・カント、決まり手の傾向など）</li>
+      <li>開発時に調べて固定した参照データ（バンクの長さ・直線・カント・向き、決まり手の傾向など）</li>
+      <li>気象データ（Open-Meteo）。天気・風の自動取得にだけ使います。送るのは競輪場のおおよその位置と日付だけです</li>
     </ul>
     <h3>守っているルール</h3>
     <ul class="plain">
       <li>レースの結果を先に見て予想することは一切しません。貼り付けた表に結果が含まれていると、読み取りを止めます。</li>
       <li>予想は確定したら変えられません。</li>
-      <li>アプリはWeb検索やほかのサイトの閲覧をしません。</li>
+      <li>アプリはWeb検索やほかのサイトの閲覧をしません。例外は天気だけで、気象データ（Open-Meteo）から天気と風を取ります。ほかのサイトの予想・オッズ・結果は見ません。</li>
       <li>他サイトの予想印は、予想に使いません。</li>
     </ul>
     <h3>36エンジン</h3>
@@ -173,7 +185,7 @@
 
 <footer class="notice">
   <p>的中を保証するものではありません。回収率は100%を下回るのが普通です。車券の購入は20歳になってから。無理のない範囲でお楽しみください。</p>
-  <p>このアプリは外部の情報を検索したり、ほかのサイトを見たりしません。使うのは、貼り付けた表、蓄積データ、みんなが照合したレースの学習結果だけです。</p>
+  <p>このアプリは外部の情報を検索したり、ほかのサイトを見たりしません。使うのは、貼り付けた表、蓄積データ、みんなが照合したレースの学習結果と、天気の気象データ（Open-Meteo）だけです。ほかのサイトの予想や結果は見ません。</p>
 </footer>
 
 <script src="config.js"></script>
