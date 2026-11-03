@@ -42,7 +42,7 @@ const raceKey = m => `${m.date}|${m.venue}|${m.raceNo}`;
 /* ========== 過去レース検証の時系列チェック ========== */
 function pastOrderError(meta) {
   if (!meta.date) return "開催日を読み取れませんでした。出走表の見出し（例「青森競輪 出走表詳細（1R 2026年11月3日 初日）」）も含めて貼り付けてください";
-  if (meta.date >= todayStr()) return "過去レース検証は、今日より前のレースだけが対象です";
+  if (meta.date > todayStr()) return "まだ開催されていないレースは、過去レース検証にできません。「リアルタイム予想」を選んでください";
   if (S.races.some(r => r.mode === "past" && r.status === "pending")) return "照合していない過去レースがあります。時系列を守るため、先にそのレースの結果を照合してください";
   const last = S.races.filter(r => r.mode === "past").map(r => r.meta.date).sort().pop();
   if (last && meta.date < last) return `時系列が逆になります。過去レースは古い順に入れてください（最後に入れたのは ${last}）`;
@@ -50,12 +50,18 @@ function pastOrderError(meta) {
 }
 function modeNote() {
   $("mode-note").textContent = $("in-mode").value === "past"
-    ? "古い順に1レースずつ進めます。確定オッズを含めて貼り、予想を確定してから結果を照合します。結果のページは、予想を確定するまで開かないでください。"
-    : "発走前の出走表と、その時点のオッズを貼ってください。オッズを貼った時刻を記録します。";
+    ? "終了したレースを、古い順に1レースずつ進めます（今日の終了レースも入れられます）。確定オッズを含めて貼り、予想を確定してから結果を照合します。結果のページは、予想を確定するまで開かないでください。"
+    : "これから走るレースです。発走前の出走表と、その時点のオッズを貼ってください。オッズを貼った時刻を記録します。今日のレースでも、もう終わったレースなら「過去レース検証」を選んでください。";
 }
 
 /* ========== 予想タブ ========== */
 let draft = null;
+// 入力欄を空にする（予想を確定したあと自動で。ボタンでもできる）
+function clearInputs(all) {
+  $("in-paste").value = "";
+  ["in-weather", "in-winddir", "in-windstr"].forEach(id => $(id).value = "");
+  if (all) { draft = null; $("check-card").classList.add("hide"); msg("parse-msg", ""); $("pred-out").innerHTML = ""; }
+}
 $("b-parse").onclick = () => {
   const text = $("in-paste").value;
   if (!text.trim()) { msg("parse-msg", "出走表とオッズを貼り付けてください", "err"); return; }
@@ -63,14 +69,23 @@ $("b-parse").onclick = () => {
   $("check-card").classList.add("hide"); $("pred-out").innerHTML = "";
   if (!r.ok) { msg("parse-msg", `結果の情報（${r.leak.join("・")}）が含まれているため、読み取りを止めました。発走前の出走表とオッズだけを貼り付けてください。`, "err"); return; }
   if (r.riders.length < 5) { msg("parse-msg", "選手を5人以上読み取れませんでした。チャリロトの「出走表詳細」のページを、上から下まで選んで貼り付けてください。", "err"); return; }
+  let note = "";
+  if (r.meta.date && r.meta.date < todayStr() && $("in-mode").value === "live") {
+    $("in-mode").value = "past"; modeNote();
+    note = `<br>${esc(r.meta.date)} のレースなので、「過去レース検証」に切り替えました。`;
+  }
+  if (r.meta.date && r.meta.date > todayStr() && $("in-mode").value === "past") {
+    $("in-mode").value = "live"; modeNote();
+    note = `<br>${esc(r.meta.date)} のレースなので、「リアルタイム予想」に切り替えました。`;
+  }
+  if (r.meta.date === todayStr()) note = `<br>今日のレースです。いまの種類は「${$("in-mode").value === "past" ? "過去レース検証（終了したレース）" : "リアルタイム予想（これから走るレース）"}」です。違っていれば、上の「レースの種類」を変えてから確定してください。`;
   const mode = $("in-mode").value;
-  if (mode === "live" && r.meta.date && r.meta.date !== todayStr()) { msg("parse-msg", `この出走表は ${r.meta.date} のレースです。リアルタイム予想は今日のレースだけです。過去のレースなら「過去レース検証」を選んでください。`, "err"); return; }
   if (mode === "past") { const er = pastOrderError(r.meta); if (er) { msg("parse-msg", er, "err"); return; } }
   if (!REF.venues[r.meta.venue]) r.warnings.push(`場「${r.meta.venue || "不明"}」の参照データがありません。バンクの条件を使わずに予想します`);
   const key = raceKey(r.meta);
   if (S.races.some(x => x.rkey === key)) { msg("parse-msg", "このレースの予想はすでに確定しています。予想は1レース1回だけです。", "err"); return; }
   draft = { mode, parsed: r, oddsAt: new Date().toISOString() };
-  msg("parse-msg", `読み取りました：選手${r.riders.length}人・3連単オッズ${Object.keys(r.odds).length}通り`, "ok");
+  msg("parse-msg", `読み取りました：選手${r.riders.length}人・3連単オッズ${Object.keys(r.odds).length}通り${note}`, "ok");
   renderCheck();
 };
 function renderCheck() {
@@ -85,7 +100,9 @@ function renderCheck() {
 $("b-predict").onclick = () => {
   if (!draft) return;
   const r = draft.parsed;
+  draft.mode = $("in-mode").value;
   if (draft.mode === "past") { const er = pastOrderError(r.meta); if (er) { msg("parse-msg", er, "err"); return; } }
+  if (draft.mode === "live" && r.meta.date && r.meta.date < todayStr()) { msg("parse-msg", "前日以前のレースは「リアルタイム予想」にできません。「過去レース検証」を選んでください", "err"); return; }
   const key = raceKey(r.meta);
   if (S.races.some(x => x.rkey === key)) { msg("parse-msg", "このレースの予想はすでに確定しています。", "err"); return; }
   const lineup = $("in-lineup").value.split(/[\/／|｜]/).map(g => (g.match(/[1-9]/g) || []).map(Number)).filter(g => g.length);
@@ -103,6 +120,7 @@ $("b-predict").onclick = () => {
   race.lockedAt = new Date().toISOString(); race.fp = fingerprint(race);
   S.races.unshift(race); save();
   $("b-predict").disabled = true; draft = null;
+  clearInputs(false);
   $("pred-out").innerHTML = predCard(race);
   $("pred-out").scrollIntoView({ behavior: "smooth", block: "start" });
 };
@@ -394,6 +412,7 @@ function render() {
   if (view === "res") renderPending(); if (view === "stats") renderStats(); if (view === "learn") renderLearn(); if (view === "set") { renderSet(); renderShare(); }
 }
 $("in-mode").onchange = modeNote;
+$("b-clear").onclick = () => clearInputs(true);
 load(); modeNote(); save(); render();
 if (URL_()) { flush(); pullShared().then(() => { $("sync").textContent = headerText(); }); }
 })();
