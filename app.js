@@ -309,6 +309,16 @@ $("b-sync").onclick = async () => {
   msg("sync-msg", [a && (a.ok ? `送信：${a.accepted}レース受け付け${a.rejected && a.rejected.length ? `、${a.rejected.length}レースは受け付けられませんでした（${esc(a.rejected[0].reason)}）` : ""}` : esc(a.reason)), b.ok ? "みんなの学習を読み込みました" : esc(b.reason)].filter(Boolean).join("<br>"), b.ok ? "ok" : "err");
   renderShare(); save();
 };
+$("b-claim").onclick = async () => {
+  if (!URL_()) { msg("owner-msg", "共有学習のサーバーがまだ設定されていません", "err"); return; }
+  if (S.ownerToken) { msg("owner-msg", "この端末には、すでに合言葉が入っています", "warn"); return; }
+  msg("owner-msg", "受け取っています…（初回はサーバーの準備で30秒ほどかかります）", "warn");
+  try {
+    const res = await fetch(URL_() + "?action=claim", { cache: "no-store" }); const j = await res.json();
+    if (j.ok && j.ownerToken) { S.ownerToken = j.ownerToken; S.join = true; save(); renderShare(); msg("owner-msg", "合言葉を受け取り、この端末に保存しました。あなたの照合結果は1人分でも学習に使われます。合言葉は「全データを保存」のファイルにも入るので、ファイルは人に渡さないでください。", "ok"); await pullShared(); renderShare(); }
+    else msg("owner-msg", esc(j.reason || "受け取れませんでした"), "err");
+  } catch (e) { msg("owner-msg", "通信できませんでした。少し待ってから、もう一度押してください", "err"); }
+};
 $("b-rebuild").onclick = async () => {
   if (!URL_()) { msg("owner-msg", "共有学習のサーバーがまだ設定されていません", "err"); return; }
   msg("owner-msg", "作り直しています…（1分ほどかかることがあります）", "warn");
