@@ -99,7 +99,7 @@ $("b-predict").onclick = () => {
   };
   const useShared = !!(S.shared && S.shared.model);
   K.predict(race, useShared ? S.shared.model : S.model, useShared ? S.shared.acc : S.acc, { mode: race.mode });
-  race.modelSource = useShared ? `みんなの学習 v${S.shared.model.ver}（${S.shared.stats.races}R・${new Date(S.shared.builtAt).toLocaleString("ja-JP")}時点）` : "この端末の学習";
+  race.modelSource = useShared ? `みんなの学習 v${Number(S.shared.model.ver) || 0}（${Number(S.shared.stats.races) || 0}R・${new Date(S.shared.builtAt).toLocaleString("ja-JP")}時点）` : "この端末の学習";
   race.lockedAt = new Date().toISOString(); race.fp = fingerprint(race);
   S.races.unshift(race); save();
   $("b-predict").disabled = true; draft = null;
@@ -139,8 +139,8 @@ function openRes() {
 $("b-readres").onclick = () => {
   const t = $("in-result").value; if (!t.trim()) { msg("res-msg", "結果ページを貼り付けてください", "err"); return; }
   const r = parseResult(t);
-  if (r.venue && sel.meta.venue && !sel.meta.venue.includes(r.venue) && !r.venue.includes(sel.meta.venue)) { msg("res-msg", `貼られた結果は「${r.venue}」のものです。選んだレース（${sel.meta.venue}）と違います。`, "err"); return; }
-  if (r.raceNo && sel.meta.raceNo && r.raceNo !== sel.meta.raceNo) { msg("res-msg", `貼られた結果は${r.raceNo}Rのものです。選んだレース（${sel.meta.raceNo}R）と違います。`, "err"); return; }
+  if (r.venue && sel.meta.venue && !sel.meta.venue.includes(r.venue) && !r.venue.includes(sel.meta.venue)) { msg("res-msg", `貼られた結果は「${esc(r.venue)}」のものです。選んだレース（${esc(sel.meta.venue)}）と違います。`, "err"); return; }
+  if (r.raceNo && sel.meta.raceNo && r.raceNo !== sel.meta.raceNo) { msg("res-msg", `貼られた結果は${Number(r.raceNo)}Rのものです。選んだレース（${Number(sel.meta.raceNo)}R）と違います。`, "err"); return; }
   if (!r.order.length) { msg("res-msg", "着順を読み取れませんでした。KEIRIN.JPの結果ページの「着順」の部分を含めて貼り付けてください。", "err"); return; }
   if (!r.trifecta.length && !r.refund) { msg("res-msg", "3連単の払戻金を読み取れませんでした。「払戻金」の部分を含めて貼り付けてください。", "err"); return; }
   readRes = r;
@@ -218,16 +218,16 @@ function renderLearn() {
   const m = shared ? S.shared.model : S.model, g = m.cells["*|*|*"].w, mx = Math.max(...K.PER.map(e => g[e]), 1);
   const logs = shared ? (S.shared.metaLog || []) : S.metaLog;
   const groups = [...new Set(K.ENGINES.map(e => e[2]))];
-  $("v-learn").innerHTML = `<div class="card"><h2>${shared ? "みんなの学習" : "この端末の学習"} ・ モデル v${m.ver}</h2>
-    ${shared ? `<p class="note">${S.shared.stats.races}レースから学習（${new Date(S.shared.builtAt).toLocaleString("ja-JP")}に作成）。見直しはサーバーが1時間ごとに行います。</p>` : ""}
-    <p class="note">集中度β ${m.beta.toFixed(2)} ・ 市場の比重α ${m.alpha.toFixed(2)} ・ スジ決着の補正 ${m.syn.toFixed(2)} ・ 学習率 ${m.lr}（いま${S.stats.lossStreak}連敗。連敗中は自動で下げます）</p>
+  $("v-learn").innerHTML = `<div class="card"><h2>${shared ? "みんなの学習" : "この端末の学習"} ・ モデル v${Number(m.ver) || 0}</h2>
+    ${shared ? `<p class="note">${Number(S.shared.stats.races) || 0}レースから学習（${new Date(S.shared.builtAt).toLocaleString("ja-JP")}に作成）。見直しはサーバーが1時間ごとに行います。</p>` : ""}
+    <p class="note">集中度β ${m.beta.toFixed(2)} ・ 市場の比重α ${m.alpha.toFixed(2)} ・ スジ決着の補正 ${m.syn.toFixed(2)} ・ 学習率 ${Number(m.lr)}（いま${S.stats.lossStreak}連敗。連敗中は自動で下げます）</p>
     <p class="note">区分：1番人気オッズが基準の ${m.th.kataRatio.toFixed(2)} 倍以下で堅め、${m.th.areRatio.toFixed(2)} 倍以上で荒れ</p>
     <p class="note">偶然に振り回されない仕組み：1回の変化は±10%まで ・ データが少ない条件は上の条件の重みと混ぜる ・ 10Rごとに過去30Rで見直し、悪くなっていたら最良版に戻す</p>
-    ${m.best ? `<p class="note">最良版：v${m.best.ver}（平均対数尤度 ${m.best.ll.toFixed(3)}）</p>` : ""}
+    ${m.best ? `<p class="note">最良版：v${Number(m.best.ver) || 0}（平均対数尤度 ${m.best.ll.toFixed(3)}）</p>` : ""}
     <div class="btns${shared ? " hide" : ""}"><button class="btn sub" id="b-meta">今すぐ見直す</button><button class="btn sub" id="b-rollback"${m.best ? "" : " disabled"}>最良版に戻す</button></div><div id="learn-msg"></div></div>
   <div class="card"><h2>36エンジンの重み（全体）</h2><p class="note">「race」はレース全体に効くエンジンで、重みではなく上の集中度・市場の比重・スジ補正で効きます。</p>
     ${groups.map(gp => `<h3>${gp}</h3><div class="tbl"><table><tbody>${K.ENGINES.filter(e => e[2] === gp).map(e => `<tr><td>${e[0]}</td><td>${e[1]}</td><td style="width:38%">${e[3] === "per" ? `<div class="bar"><span style="width:${(g[e[0]] / mx * 100).toFixed(0)}%"></span></div>` : `<span class="note">race</span>`}</td><td class="n">${e[3] === "per" ? g[e[0]].toFixed(2) : ""}</td></tr>`).join("")}</tbody></table></div>`).join("")}</div>
-  <div class="card"><h2>見直しの記録</h2>${logs.length ? logs.slice(0, 10).map(e => `<details><summary>${e.race}R時点 ・ v${e.ver}</summary><ul class="log">${e.lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul></details>`).join("") : `<p class="note">10レース照合するごとに自動で見直します（5R以上あれば手動でもできます）。</p>`}</div>`;
+  <div class="card"><h2>見直しの記録</h2>${logs.length ? logs.slice(0, 10).map(e => `<details><summary>${Number(e.race) || 0}R時点 ・ v${Number(e.ver) || 0}</summary><ul class="log">${e.lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul></details>`).join("") : `<p class="note">10レース照合するごとに自動で見直します（5R以上あれば手動でもできます）。</p>`}</div>`;
   $("b-meta").onclick = () => { const e = K.metaLoop(S.races, S.model, S.stats); if (!e) { msg("learn-msg", "照合済みのレースが5R以上必要です", "warn"); return; } S.metaLog.unshift(e); save(); renderLearn(); msg("learn-msg", "見直しました", "ok"); };
   $("b-rollback").onclick = () => { if (!m.best) return; m.cells = JSON.parse(JSON.stringify(m.best.cells)); ["beta", "alpha", "syn"].forEach(k => m[k] = m.best[k]); m.ver++; S.metaLog.unshift({ at: new Date().toISOString(), race: S.stats.races, ver: m.ver, ll: m.best.ll, lines: [`手動で最良版 v${m.best.ver} に戻した`] }); save(); renderLearn(); msg("learn-msg", "最良版に戻しました", "ok"); };
 }
@@ -280,12 +280,25 @@ async function flush() {
     return j;
   } catch (e) { return { ok: false, reason: "通信できませんでした。次に開いたときに、もう一度送ります" }; }
 }
+// 共有モデルの形の確認（数字であるべきところが数字か、重みがそろっているか）
+function validShared(j) {
+  try {
+    const m = j.model, w = m.cells["*|*|*"].w;
+    if (![m.ver, m.beta, m.alpha, m.syn, m.lr, j.stats.races].every(x => typeof x === "number" && isFinite(x))) return false;
+    if (!K.PER.every(e => typeof w[e] === "number" && isFinite(w[e]) && w[e] >= 0 && w[e] <= 10)) return false;
+    if (m.beta < 0 || m.beta > 5 || m.alpha < 0 || m.alpha > 1) return false;
+    if (![m.th.kataRatio, m.th.areRatio, m.th.floor.kata, m.th.floor.std, m.th.floor.are].every(x => typeof x === "number" && isFinite(x))) return false;
+    if (m.best && !(typeof m.best.ll === "number" && isFinite(m.best.ll))) return false;
+    if (!Array.isArray(j.metaLog || [])) return false;
+    return !!(j.acc && j.acc.riders && j.acc.resid);
+  } catch (e) { return false; }
+}
 async function pullShared() {
   if (!URL_()) return { ok: false, reason: "共有学習のサーバーがまだ設定されていません" };
   try {
     const res = await fetch(URL_() + "?action=model", { cache: "no-store" });
     const j = await res.json();
-    if (!j || j.kind !== "shared" || !j.model) return { ok: false, reason: j && j.reason ? j.reason : "共有モデルを読み込めませんでした" };
+    if (!j || j.kind !== "shared" || !validShared(j)) return { ok: false, reason: j && j.reason ? String(j.reason).slice(0, 80) : "共有モデルを読み込めませんでした" };
     S.shared = { model: j.model, acc: j.acc, stats: j.stats, builtAt: j.builtAt, conflicts: j.conflicts, metaLog: j.metaLog || [] };
     save();
     return { ok: true };
@@ -294,7 +307,7 @@ async function pullShared() {
 function renderShare() {
   const st = S.shared;
   $("share-status").innerHTML = !URL_() ? "共有学習のサーバーは準備中です。いまは、この端末の学習だけで予想します。"
-    : st ? `みんなの学習：${st.stats.races}レース・モデル v${st.model.ver}（${new Date(st.builtAt).toLocaleString("ja-JP")}に作成）。予想にはこのモデルを使います。${S.outbox.length ? `<br>送信待ち：${S.outbox.length}レース` : ""}`
+    : st ? `みんなの学習：${Number(st.stats.races) || 0}レース・モデル v${Number(st.model.ver) || 0}（${esc(new Date(st.builtAt).toLocaleString("ja-JP"))}に作成）。予想にはこのモデルを使います。${S.outbox.length ? `<br>送信待ち：${S.outbox.length}レース` : ""}`
     : "まだ共有モデルを読み込んでいません。「今すぐ同期する」を押してください。";
   $("in-join").value = S.join === true ? "1" : S.join === false ? "0" : "";
   $("in-owner").value = S.ownerToken || "";
@@ -306,7 +319,7 @@ $("in-owner").onchange = () => { S.ownerToken = $("in-owner").value.trim(); save
 $("b-sync").onclick = async () => {
   msg("sync-msg", "同期しています…", "warn");
   const a = await flush(), b = await pullShared();
-  msg("sync-msg", [a && (a.ok ? `送信：${a.accepted}レース受け付け${a.rejected && a.rejected.length ? `、${a.rejected.length}レースは受け付けられませんでした（${esc(a.rejected[0].reason)}）` : ""}` : esc(a.reason)), b.ok ? "みんなの学習を読み込みました" : esc(b.reason)].filter(Boolean).join("<br>"), b.ok ? "ok" : "err");
+  msg("sync-msg", [a && (a.ok ? `送信：${a.accepted}レース受け付け${a.rejected && a.rejected.length ? `、${a.rejected.length}レースは受け付けられませんでした（${esc(String(a.rejected[0].reason).slice(0, 60))}）` : ""}` : esc(a.reason)), b.ok ? "みんなの学習を読み込みました" : esc(b.reason)].filter(Boolean).join("<br>"), b.ok ? "ok" : "err");
   renderShare(); save();
 };
 $("b-claim").onclick = async () => {
@@ -319,10 +332,56 @@ $("b-claim").onclick = async () => {
     else msg("owner-msg", esc(j.reason || "受け取れませんでした"), "err");
   } catch (e) { msg("owner-msg", "通信できませんでした。少し待ってから、もう一度押してください", "err"); }
 };
+async function sha256(text) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+let latestHash = null;
+$("b-code-check").onclick = async () => {
+  if (!URL_()) return;
+  $("code-status").textContent = "確認しています…";
+  try {
+    const src = await (await fetch("server/bundle.gs", { cache: "no-store" })).text();
+    latestHash = await sha256(src);
+    const cur = await (await fetch(URL_() + "?action=code", { cache: "no-store" })).json();
+    const same = cur.hash === latestHash;
+    $("code-status").innerHTML = `サーバーで動いているコード：${cur.hash ? esc(String(cur.hash).slice(0, 12)) + "…（" + esc(new Date(cur.approvedAt).toLocaleString("ja-JP")) + "に承認）" : "まだ承認されていません"}<br>GitHubの最新：${esc(latestHash.slice(0, 12))}…<br>${same ? "同じです。承認は不要です。" : "違います。開発者（Claude）が更新を伝えたときだけ、承認してください。覚えのない更新なら、承認しないでください。"}`;
+    $("b-code-approve").disabled = same;
+  } catch (e) { $("code-status").textContent = "確認できませんでした。通信状態を確かめてください"; }
+};
+$("b-code-approve").onclick = async () => {
+  if (!latestHash || !S.ownerToken) { msg("owner-msg", "先に「確認する」を押してください（合言葉も必要です）", "err"); return; }
+  msg("owner-msg", "承認しています…", "warn");
+  try {
+    const j = await post({ action: "approveCode", ownerToken: S.ownerToken, expectHash: latestHash });
+    msg("owner-msg", j.ok ? `承認しました（${esc(String(j.hash).slice(0, 12))}…）。サーバーは今後このコードで動きます。` : esc(j.reason), j.ok ? "ok" : "err");
+    if (j.ok) { $("b-code-approve").disabled = true; await pullShared(); renderShare(); }
+  } catch (e) { msg("owner-msg", "通信できませんでした", "err"); }
+};
+$("b-admin").onclick = async () => {
+  if (!S.ownerToken) { msg("owner-msg", "合言葉が必要です", "err"); return; }
+  try {
+    const j = await post({ action: "adminStats", ownerToken: S.ownerToken });
+    if (!j.ok) { msg("owner-msg", esc(j.reason), "err"); return; }
+    const t = j.stats || {};
+    msg("owner-msg", `最後の学習し直し：${esc(t.at ? new Date(t.at).toLocaleString("ja-JP") : "-")}<br>採用：開発者 ${Number(t.owner) || 0}R ・ みんな ${Number(t.public) || 0}R<br>確認待ち（信頼できる送信者が2人そろっていない）：${Number(t.waiting) || 0}R<br>食い違いで不採用：${Number(t.conflicts) || 0}R<br>送信者：${Number(t.clients) || 0}人（信頼 ${Number(t.trusted) || 0}人・食い違いで除外 ${Number(t.excluded) || 0}人・手動ブロック ${Number(j.blocked) || 0}人）`, "ok");
+  } catch (e) { msg("owner-msg", "通信できませんでした", "err"); }
+};
+let rotateArmed = false;
+$("b-rotate").onclick = async () => {
+  if (!S.ownerToken) { msg("owner-msg", "合言葉が必要です", "err"); return; }
+  if (!rotateArmed) { rotateArmed = true; $("b-rotate").textContent = "もう一度押すと、合言葉を新しくします"; setTimeout(() => { rotateArmed = false; $("b-rotate").textContent = "合言葉を新しくする"; }, 8000); return; }
+  rotateArmed = false; $("b-rotate").textContent = "合言葉を新しくする";
+  try {
+    const j = await post({ action: "rotateToken", ownerToken: S.ownerToken });
+    if (j.ok && j.ownerToken) { S.ownerToken = j.ownerToken; save(); renderShare(); msg("owner-msg", "合言葉を新しくして、この端末に保存しました。古い合言葉はもう使えません。保存したファイルも作り直してください。", "ok"); }
+    else msg("owner-msg", esc(j.reason || "できませんでした"), "err");
+  } catch (e) { msg("owner-msg", "通信できませんでした", "err"); }
+};
 $("b-rebuild").onclick = async () => {
   if (!URL_()) { msg("owner-msg", "共有学習のサーバーがまだ設定されていません", "err"); return; }
   msg("owner-msg", "作り直しています…（1分ほどかかることがあります）", "warn");
-  try { const j = await post({ action: "rebuild", ownerToken: S.ownerToken }); msg("owner-msg", j.ok ? `作り直しました：採用 ${j.rebuilt.races}レース・食い違い ${j.rebuilt.conflicts}レース` : esc(j.reason), j.ok ? "ok" : "err"); if (j.ok) await pullShared(); renderShare(); }
+  try { const j = await post({ action: "rebuild", ownerToken: S.ownerToken }); msg("owner-msg", j.ok ? `作り直しました：採用 ${Number(j.rebuilt.races) || 0}レース（開発者 ${Number(j.rebuilt.owner) || 0}・みんな ${Number(j.rebuilt.public) || 0}）・確認待ち ${Number(j.rebuilt.waiting) || 0}・食い違い ${Number(j.rebuilt.conflicts) || 0}` : esc(j.reason), j.ok ? "ok" : "err"); if (j.ok) await pullShared(); renderShare(); }
   catch (e) { msg("owner-msg", "通信できませんでした", "err"); }
 };
 

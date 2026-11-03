@@ -1,13 +1,17 @@
 // 競輪3連単ラボ 共有学習サーバー（Google Apps Script）
 // 役割：みんなの照合済みレースを受け付け、検証し、時系列順に学習し直して、共有モデルを配る。
 // このサーバーもWeb検索やほかのサイトの閲覧はしない。受け取るのは、利用者が貼った表から読み取ったデータと結果だけ。
-// 同じプロジェクトに refdata.gs と engine.gs（GitHubの refdata.js・engine.js と同じ中身）を入れて使う。
+// 起動用スクリプト（bootstrap.gs）が、開発者の承認したこのコードだけを動かす。
+// ドライブには触らない（スプレッドシートだけを使う）。
 
-var FOLDER_NAME = "競輪予想システム";
 var SHEET_NAME = "競輪3連単ラボ 共有データ";
 var MODEL_SHEET = "model";      // 共有モデルはスプレッドシートに保存する（ドライブへの書き込み権限が要らない）
 var CHUNK = 45000;               // 1つのセルに入れる文字数（上限は5万字）
-var MAX_PER_DAY = 200;   // 1人1日に送れるレース数の上限
+var MAX_PER_DAY = 200;           // 1人1日に送れるレース数の上限
+var MAX_PER_HOUR_ALL = 600;      // 開発者以外の全員で、1時間に受け付けるレース数の上限（大量送信への対策）
+var MAX_BODY = 512 * 1024;       // 1回の送信の大きさの上限（文字数）
+var MAX_ROWS = 100000;           // 受け付けたレースを保存する行数の上限
+var TRUST_MIN = 3;               // 信頼できる送信者になるのに必要な「開発者と一致したレース数」
 
 /* ========== 準備（初回のアクセスで自動的に行う） ========== */
 function ensureSetup_() {
@@ -18,8 +22,6 @@ function ensureSetup_() {
 }
 function setup() {
   var props = PropertiesService.getScriptProperties();
-  var folder = null;
-  try { folder = getFolder_(); } catch (e) {}
   if (!props.getProperty("SHEET_ID")) {
     var ss = SpreadsheetApp.create(SHEET_NAME);
     var sh = ss.getSheets()[0]; sh.setName("submissions");
@@ -28,8 +30,6 @@ function setup() {
     var log = ss.insertSheet("log"); log.appendRow(["日時", "内容"]);
     ss.insertSheet(MODEL_SHEET);
     props.setProperty("SHEET_ID", ss.getId());
-    // 「競輪予想システム」フォルダへの移動は、権限があるときだけ行う（なければマイドライブに置いたまま）
-    try { if (folder) DriveApp.getFileById(ss.getId()).moveTo(folder); } catch (e) {}
   }
   if (!props.getProperty("OWNER_TOKEN")) {
     props.setProperty("OWNER_TOKEN", Utilities.getUuid().replace(/-/g, ""));
@@ -41,10 +41,6 @@ function setup() {
   Logger.log("準備完了");
 }
 
-function getFolder_() {
-  var it = DriveApp.getFoldersByName(FOLDER_NAME);
-  return it.hasNext() ? it.next() : null;
-}
 function modelSheet_() {
   var ss = SpreadsheetApp.openById(PropertiesService.getScriptProperties().getProperty("SHEET_ID"));
   return ss.getSheetByName(MODEL_SHEET) || ss.insertSheet(MODEL_SHEET);
@@ -91,44 +87,66 @@ function doGet(e) {
     var m = t2 ? JSON.parse(t2) : null;
     return json_({ ok: true, builtAt: m && m.builtAt, races: m && m.stats && m.stats.races, ver: m && m.model && m.model.ver });
   }
+  // それ以外の操作は受け付けない（情報を出しすぎない）
   return json_({ ok: false, reason: "不明な操作" });
 }
 
 /* ========== 照合済みレースを受け付ける ========== */
 function doPost(e) {
   ensureSetup_();
+  if (!e || !e.postData || !e.postData.contents || e.postData.contents.length > MAX_BODY) return json_({ ok: false, reason: "送信が大きすぎます" });
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(20000);
     var body = JSON.parse(e.postData.contents);
     var props = PropertiesService.getScriptProperties();
     var isOwner = !!(body.ownerToken && body.ownerToken === props.getProperty("OWNER_TOKEN"));
-    if (body.action === "rebuild") {
-      if (!isOwner) return json_({ ok: false, reason: "開発者だけが実行できます" });
-      var r = rebuild_();
-      return json_({ ok: true, rebuilt: r });
+    // ----- 開発者だけの操作 -----
+    if (body.action === "rebuild" || body.action === "rotateToken" || body.action === "adminStats" || body.action === "block") {
+      if (!isOwner) { log_("開発者専用の操作が合言葉なしで試された：" + String(body.action).slice(0, 20)); return json_({ ok: false, reason: "開発者だけが実行できます" }); }
+      if (body.action === "rebuild") return json_({ ok: true, rebuilt: rebuild_() });
+      if (body.action === "rotateToken") {
+        var nt = Utilities.getUuid().replace(/-/g, "") + Utilities.getUuid().replace(/-/g, "");
+        props.setProperty("OWNER_TOKEN", nt);
+        log_("合言葉を新しくした");
+        return json_({ ok: true, ownerToken: nt });
+      }
+      if (body.action === "block") {
+        var id = String(body.clientId || "").replace(/[^a-zA-Z0-9-]/g, "").slice(0, 40);
+        var bl = JSON.parse(props.getProperty("BLOCKED") || "[]");
+        if (id && bl.indexOf(id) < 0) bl.push(id);
+        props.setProperty("BLOCKED", JSON.stringify(bl.slice(-500)));
+        log_("送信者をブロック：" + id);
+        return json_({ ok: true, blocked: bl.length });
+      }
+      if (body.action === "adminStats") return json_({ ok: true, stats: JSON.parse(props.getProperty("LAST_STATS") || "{}"), blocked: JSON.parse(props.getProperty("BLOCKED") || "[]").length });
     }
     if (body.action !== "submit") return json_({ ok: false, reason: "不明な操作" });
+    // ----- 送信の受け付け -----
     var clientId = String(body.clientId || "").replace(/[^a-zA-Z0-9-]/g, "").slice(0, 40);
     if (!clientId) return json_({ ok: false, reason: "送信者の識別子がありません" });
+    var blocked = JSON.parse(props.getProperty("BLOCKED") || "[]");
+    if (!isOwner && blocked.indexOf(clientId) >= 0) return json_({ ok: true, accepted: 0, rejected: [] });   // ブロック中の送信者には理由を教えない
     var items = Array.isArray(body.items) ? body.items.slice(0, 50) : [];
     var sh = sheet_();
-    // 1日の上限
-    var today = Utilities.formatDate(new Date(), "Asia/Tokyo", "yyyy-MM-dd");
-    var cache = CacheService.getScriptCache(), ck = "n_" + clientId + "_" + today;
-    var sent = Number(cache.get(ck) || 0);
-    var accepted = 0, rejected = [];
+    if (!isOwner && sh.getLastRow() >= MAX_ROWS) return json_({ ok: false, reason: "受け付けを一時停止しています" });
+    var now = new Date(), today = Utilities.formatDate(now, "Asia/Tokyo", "yyyy-MM-dd"), hour = Utilities.formatDate(now, "Asia/Tokyo", "yyyyMMddHH");
+    var cache = CacheService.getScriptCache(), ck = "n_" + clientId + "_" + today, hk = "h_" + hour;
+    var sent = Number(cache.get(ck) || 0), hourAll = Number(cache.get(hk) || 0);
+    var accepted = 0, rejected = [], rows = [];
     items.forEach(function (it) {
       if (!isOwner && sent >= MAX_PER_DAY) { rejected.push({ key: it && it.raceKey, reason: "1日の上限に達しました" }); return; }
+      if (!isOwner && hourAll >= MAX_PER_HOUR_ALL) { rejected.push({ key: it && it.raceKey, reason: "混み合っています。時間をおいて送ってください" }); return; }
       var v = validate_(it);
       if (!v.ok) { rejected.push({ key: it && it.raceKey, reason: v.reason }); return; }
-      sh.appendRow([new Date(), v.item.raceKey, clientId, isOwner, v.sig, JSON.stringify(v.item)]);
-      accepted++; sent++;
+      rows.push([now, v.item.raceKey, clientId, isOwner, v.sig, JSON.stringify(v.item)]);
+      accepted++; sent++; if (!isOwner) hourAll++;
     });
-    cache.put(ck, String(sent), 21600);
+    if (rows.length) sh.getRange(sh.getLastRow() + 1, 1, rows.length, 6).setValues(rows);
+    cache.put(ck, String(sent), 21600); cache.put(hk, String(hourAll), 7200);
     return json_({ ok: true, accepted: accepted, rejected: rejected });
   } catch (err) {
-    return json_({ ok: false, reason: "受け付けできませんでした：" + err });
+    return json_({ ok: false, reason: "受け付けできませんでした" });
   } finally {
     try { lock.releaseLock(); } catch (e2) {}
   }
@@ -162,11 +180,23 @@ function validate_(it) {
   if (order.length !== 3 || unique_(order).length !== 3 || order.some(function (x) { return nos.indexOf(x) < 0; })) return { ok: false, reason: "着順が正しくありません" };
   var pays = (res.pays || []).map(function (p) { return { combo: (p.combo || []).map(Number), pay: Number(p.pay), popular: Number(p.popular) || null }; })
     .filter(function (p) { return p.combo.length === 3 && p.pay >= 100 && p.pay < 100000000; });
+  if (!pays.length) return { ok: false, reason: "3連単の払戻がありません" };
+  if (!pays.some(function (p) { return p.combo.join("-") === order.join("-"); })) return { ok: false, reason: "着順と払戻の組番が合いません" };
+  // 払戻とオッズの整合：確定オッズなら払戻はほぼオッズ×100円、締め切り前なら大きくは離れない
+  var oddsN = Object.keys(odds).length, need = n * (n - 1) * (n - 2);
+  if (oddsN && oddsN !== need) return { ok: false, reason: "オッズの組み合わせ数が正しくありません" };
+  var oddsType = it.oddsType === "確定" ? "確定" : "締め切り前";
+  for (var q = 0; q < pays.length; q++) {
+    var o = odds[pays[q].combo.join("-")];
+    if (!o) continue;
+    var ratio = pays[q].pay / (o * 100);
+    if (oddsType === "確定" ? (ratio < 0.85 || ratio > 1.15) : (ratio < 0.25 || ratio > 4)) return { ok: false, reason: "払戻とオッズが合いません" };
+  }
   var finishers = (res.finishers || []).slice(0, 9).map(function (f) { return { rank: typeof f.rank === "number" ? f.rank : str_(f.rank, 1), no: num_(f.no), kimarite: f.kimarite ? str_(f.kimarite, 4) : null }; });
   var cond = it.cond || {};
   var item = {
     raceKey: m.date + "|" + m.venue + "|" + raceNo,
-    oddsType: it.oddsType === "確定" ? "確定" : "締め切り前",
+    oddsType: oddsType,
     meta: { date: m.date, venue: m.venue, raceNo: raceNo, day: str_(m.day, 4), grade: str_(m.grade, 4), kind: str_(m.kind, 10), cars: n },
     riders: riders, lineup: lineup, odds: odds,
     cond: { weather: ["晴", "曇", "雨"].indexOf(cond.weather) >= 0 ? cond.weather : null, windDir: REF.wind[cond.windDir] ? cond.windDir : null, windStr: cond.windStr === "強" ? "強" : null },
@@ -195,14 +225,32 @@ function rebuild_() {
     var s = g.bySig[sig] || (g.bySig[sig] = { clients: {}, item: item });
     s.clients[client] = true;
   });
-  // 採用の決まり：開発者が照合したレース、または2人以上の結果が一致したレース。食い違いがあるレースは使わない
-  var acceptedRaces = [], conflicts = 0;
+  // 送信者の信頼度：開発者が照合した同じレースと結果が一致すると+1。1回でも食い違えば、その送信者のデータは使わない
+  var props = PropertiesService.getScriptProperties();
+  var blocked = {}; JSON.parse(props.getProperty("BLOCKED") || "[]").forEach(function (b) { blocked[b] = true; });
+  var trust = {}, bad = {};
   Object.keys(groups).forEach(function (key) {
-    var g = groups[key], sigs = Object.keys(g.bySig);
-    if (g.owner) { if (sigs.length > 1 && sigs.some(function (s) { return s !== g.owner.sig && Object.keys(g.bySig[s].clients).length >= 2; })) { conflicts++; return; } acceptedRaces.push(g.owner.item); return; }
+    var g = groups[key]; if (!g.owner) return;
+    Object.keys(g.bySig).forEach(function (sig) {
+      Object.keys(g.bySig[sig].clients).forEach(function (c) {
+        if (sig === g.owner.sig) trust[c] = (trust[c] || 0) + 1; else bad[c] = true;
+      });
+    });
+  });
+  var usable = function (c) { return !blocked[c] && !bad[c]; };
+  var trusted = function (c) { return usable(c) && (trust[c] || 0) >= TRUST_MIN; };
+  // 採用の決まり：
+  //  ・開発者が照合したレースは採用（開発者の結果を正とする）
+  //  ・それ以外は、信頼できる送信者2人以上の結果が一致し、使える送信者の中に食い違いがないレースだけ採用
+  var acceptedRaces = [], conflicts = 0, waiting = 0, ownerN = 0, publicN = 0;
+  Object.keys(groups).forEach(function (key) {
+    var g = groups[key];
+    if (g.owner) { acceptedRaces.push(g.owner.item); ownerN++; return; }
+    var sigs = Object.keys(g.bySig).filter(function (sig) { return Object.keys(g.bySig[sig].clients).some(usable); });
+    if (!sigs.length) return;
     if (sigs.length > 1) { conflicts++; return; }
     var s = g.bySig[sigs[0]];
-    if (Object.keys(s.clients).length >= 2) acceptedRaces.push(s.item);
+    if (Object.keys(s.clients).filter(trusted).length >= 2) { acceptedRaces.push(s.item); publicN++; } else waiting++;
   });
   // 時系列順（開催日・場・レース番号）
   acceptedRaces.sort(function (a, b) { return a.meta.date < b.meta.date ? -1 : a.meta.date > b.meta.date ? 1 : a.meta.raceNo - b.meta.raceNo; });
@@ -224,6 +272,9 @@ function rebuild_() {
   var out = { app: "競輪3連単ラボ", kind: "shared", builtAt: new Date().toISOString(), engineVer: 2,
     stats: stats, conflicts: conflicts, model: model, acc: acc, metaLog: metaLog.slice(0, 20) };
   writeModel_(JSON.stringify(out));
-  log_("学習し直し：採用 " + acceptedRaces.length + "R、食い違い " + conflicts + "R");
-  return { races: acceptedRaces.length, conflicts: conflicts };
+  var st = { at: new Date().toISOString(), owner: ownerN, public: publicN, waiting: waiting, conflicts: conflicts,
+    clients: Object.keys(trust).length + Object.keys(bad).length, trusted: Object.keys(trust).filter(trusted).length, excluded: Object.keys(bad).length };
+  props.setProperty("LAST_STATS", JSON.stringify(st));
+  log_("学習し直し：開発者 " + ownerN + "R・みんな " + publicN + "R・確認待ち " + waiting + "R・食い違い " + conflicts + "R・除外した送信者 " + st.excluded);
+  return { races: acceptedRaces.length, conflicts: conflicts, owner: ownerN, public: publicN, waiting: waiting };
 }

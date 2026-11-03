@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://script.google.com https://script.googleusercontent.com; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
 <title>競輪3連単ラボ</title>
 <meta name="description" content="チャリロトの出走表とオッズを貼るだけで、36エンジンが3連単を1〜3点予想し、結果と照合して学習します。">
 <link rel="stylesheet" href="style.css">
@@ -127,6 +129,14 @@
       <label class="f" for="in-owner">開発者用の合言葉（この端末だけに保存。人に教えないでください）<input id="in-owner" type="password" autocomplete="off"></label>
       <button class="btn sub" id="b-claim">合言葉を受け取る（最初の1回だけ）</button>
       <button class="btn sub" id="b-rebuild">共有モデルを今すぐ作り直す</button>
+      <h3>サーバーのコード</h3>
+      <p class="note" id="code-status">「確認する」を押すと、サーバーで動いているコードと、GitHubの最新のコードを比べます。</p>
+      <div class="btns"><button class="btn sub" id="b-code-check">確認する</button><button class="btn" id="b-code-approve" disabled>最新のコードを承認</button></div>
+      <h3>受け付けの状況</h3>
+      <button class="btn sub" id="b-admin">状況を見る</button>
+      <h3>合言葉</h3>
+      <p class="note">合言葉が漏れたかもしれないときは、新しくしてください。古い合言葉は使えなくなります。</p>
+      <button class="btn danger" id="b-rotate">合言葉を新しくする</button>
       <div id="owner-msg"></div>
     </details>
   </div>
