@@ -5,7 +5,8 @@
 
 var FOLDER_NAME = "競輪予想システム";
 var SHEET_NAME = "競輪3連単ラボ 共有データ";
-var MODEL_FILE = "shared_model.json";
+var MODEL_SHEET = "model";      // 共有モデルはスプレッドシートに保存する（ドライブへの書き込み権限が要らない）
+var CHUNK = 45000;               // 1つのセルに入れる文字数（上限は5万字）
 var MAX_PER_DAY = 200;   // 1人1日に送れるレース数の上限
 
 /* ========== 準備（初回のアクセスで自動的に行う） ========== */
@@ -17,15 +18,18 @@ function ensureSetup_() {
 }
 function setup() {
   var props = PropertiesService.getScriptProperties();
-  var folder = getFolder_();
+  var folder = null;
+  try { folder = getFolder_(); } catch (e) {}
   if (!props.getProperty("SHEET_ID")) {
     var ss = SpreadsheetApp.create(SHEET_NAME);
     var sh = ss.getSheets()[0]; sh.setName("submissions");
     sh.appendRow(["受信日時", "レース", "送信者", "開発者", "結果の指紋", "データ"]);
     sh.setFrozenRows(1);
     var log = ss.insertSheet("log"); log.appendRow(["日時", "内容"]);
-    DriveApp.getFileById(ss.getId()).moveTo(folder);
+    ss.insertSheet(MODEL_SHEET);
     props.setProperty("SHEET_ID", ss.getId());
+    // 「競輪予想システム」フォルダへの移動は、権限があるときだけ行う（なければマイドライブに置いたまま）
+    try { if (folder) DriveApp.getFileById(ss.getId()).moveTo(folder); } catch (e) {}
   }
   if (!props.getProperty("OWNER_TOKEN")) {
     props.setProperty("OWNER_TOKEN", Utilities.getUuid().replace(/-/g, ""));
@@ -39,7 +43,28 @@ function setup() {
 
 function getFolder_() {
   var it = DriveApp.getFoldersByName(FOLDER_NAME);
-  return it.hasNext() ? it.next() : DriveApp.createFolder(FOLDER_NAME);
+  return it.hasNext() ? it.next() : null;
+}
+function modelSheet_() {
+  var ss = SpreadsheetApp.openById(PropertiesService.getScriptProperties().getProperty("SHEET_ID"));
+  return ss.getSheetByName(MODEL_SHEET) || ss.insertSheet(MODEL_SHEET);
+}
+function readModel_() {
+  var cache = CacheService.getScriptCache(), c = cache.get("model");
+  if (c) return c;
+  var sh = modelSheet_(), n = sh.getLastRow();
+  if (!n) return null;
+  var text = sh.getRange(1, 1, n, 1).getValues().map(function (r) { return r[0]; }).join("");
+  if (text.length < 100000) cache.put("model", text, 3600);
+  return text;
+}
+function writeModel_(text) {
+  var sh = modelSheet_(); sh.clear();
+  var rows = [];
+  for (var i = 0; i < text.length; i += CHUNK) rows.push([text.slice(i, i + CHUNK)]);
+  if (rows.length) sh.getRange(1, 1, rows.length, 1).setNumberFormat("@").setValues(rows);
+  var cache = CacheService.getScriptCache();
+  if (text.length < 100000) cache.put("model", text, 3600); else cache.remove("model");
 }
 function sheet_() { return SpreadsheetApp.openById(PropertiesService.getScriptProperties().getProperty("SHEET_ID")).getSheetByName("submissions"); }
 function log_(text) { try { SpreadsheetApp.openById(PropertiesService.getScriptProperties().getProperty("SHEET_ID")).getSheetByName("log").appendRow([new Date(), text]); } catch (e) {} }
@@ -57,13 +82,13 @@ function doGet(e) {
     return json_({ ok: true, ownerToken: props.getProperty("OWNER_TOKEN"), note: "この合言葉をアプリの「保存・説明」→「開発者向け」に入れてください。二度と表示されません。" });
   }
   if (action === "model") {
-    var it = getFolder_().getFilesByName(MODEL_FILE);
-    if (!it.hasNext()) return json_({ ok: false, reason: "まだ共有モデルがありません" });
-    return ContentService.createTextOutput(it.next().getBlob().getDataAsString()).setMimeType(ContentService.MimeType.JSON);
+    var text = readModel_();
+    if (!text) return json_({ ok: false, reason: "まだ共有モデルがありません" });
+    return ContentService.createTextOutput(text).setMimeType(ContentService.MimeType.JSON);
   }
   if (action === "status") {
-    var it2 = getFolder_().getFilesByName(MODEL_FILE);
-    var m = it2.hasNext() ? JSON.parse(it2.next().getBlob().getDataAsString()) : null;
+    var t2 = readModel_();
+    var m = t2 ? JSON.parse(t2) : null;
     return json_({ ok: true, builtAt: m && m.builtAt, races: m && m.stats && m.stats.races, ver: m && m.model && m.model.ver });
   }
   return json_({ ok: false, reason: "不明な操作" });
@@ -198,8 +223,7 @@ function rebuild_() {
   });
   var out = { app: "競輪3連単ラボ", kind: "shared", builtAt: new Date().toISOString(), engineVer: 2,
     stats: stats, conflicts: conflicts, model: model, acc: acc, metaLog: metaLog.slice(0, 20) };
-  var folder = getFolder_(), it = folder.getFilesByName(MODEL_FILE);
-  if (it.hasNext()) it.next().setContent(JSON.stringify(out)); else folder.createFile(MODEL_FILE, JSON.stringify(out), MimeType.PLAIN_TEXT);
+  writeModel_(JSON.stringify(out));
   log_("学習し直し：採用 " + acceptedRaces.length + "R、食い違い " + conflicts + "R");
   return { races: acceptedRaces.length, conflicts: conflicts };
 }
