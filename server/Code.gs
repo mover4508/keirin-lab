@@ -8,7 +8,13 @@ var SHEET_NAME = "競輪3連単ラボ 共有データ";
 var MODEL_FILE = "shared_model.json";
 var MAX_PER_DAY = 200;   // 1人1日に送れるレース数の上限
 
-/* ========== 最初に1回だけ実行する ========== */
+/* ========== 準備（初回のアクセスで自動的に行う） ========== */
+function ensureSetup_() {
+  var props = PropertiesService.getScriptProperties();
+  if (props.getProperty("READY") === "1") return;
+  setup();
+  props.setProperty("READY", "1");
+}
 function setup() {
   var props = PropertiesService.getScriptProperties();
   var folder = getFolder_();
@@ -27,8 +33,8 @@ function setup() {
   // 1時間ごとに学習し直す
   ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === "rebuild") ScriptApp.deleteTrigger(t); });
   ScriptApp.newTrigger("rebuild").timeBased().everyHours(1).create();
-  rebuild();
-  Logger.log("準備完了。開発者用の合言葉：" + props.getProperty("OWNER_TOKEN"));
+  rebuild_();
+  Logger.log("準備完了");
 }
 
 function getFolder_() {
@@ -41,7 +47,15 @@ function json_(obj) { return ContentService.createTextOutput(JSON.stringify(obj)
 
 /* ========== 共有モデルを配る ========== */
 function doGet(e) {
+  ensureSetup_();
   var action = (e && e.parameter && e.parameter.action) || "model";
+  if (action === "claim") {
+    // 開発者用の合言葉は、最初の1回だけ表示する
+    var props = PropertiesService.getScriptProperties();
+    if (props.getProperty("CLAIMED") === "1") return json_({ ok: false, reason: "合言葉はすでに受け取り済みです" });
+    props.setProperty("CLAIMED", "1");
+    return json_({ ok: true, ownerToken: props.getProperty("OWNER_TOKEN"), note: "この合言葉をアプリの「保存・説明」→「開発者向け」に入れてください。二度と表示されません。" });
+  }
   if (action === "model") {
     var it = getFolder_().getFilesByName(MODEL_FILE);
     if (!it.hasNext()) return json_({ ok: false, reason: "まだ共有モデルがありません" });
@@ -57,6 +71,7 @@ function doGet(e) {
 
 /* ========== 照合済みレースを受け付ける ========== */
 function doPost(e) {
+  ensureSetup_();
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(20000);
@@ -65,7 +80,7 @@ function doPost(e) {
     var isOwner = !!(body.ownerToken && body.ownerToken === props.getProperty("OWNER_TOKEN"));
     if (body.action === "rebuild") {
       if (!isOwner) return json_({ ok: false, reason: "開発者だけが実行できます" });
-      var r = rebuild();
+      var r = rebuild_();
       return json_({ ok: true, rebuilt: r });
     }
     if (body.action !== "submit") return json_({ ok: false, reason: "不明な操作" });
@@ -141,7 +156,8 @@ function str_(v, max) { return v == null ? null : String(v).replace(/[\u0000-\u0
 function unique_(a) { return a.filter(function (x, i) { return a.indexOf(x) === i; }); }
 
 /* ========== 学習し直す（時系列順に、最初から） ========== */
-function rebuild() {
+function rebuild() { ensureSetup_(); return rebuild_(); }
+function rebuild_() {
   var sh = sheet_(), rows = sh.getLastRow() > 1 ? sh.getRange(2, 1, sh.getLastRow() - 1, 6).getValues() : [];
   // レースごとにまとめる
   var groups = {};
