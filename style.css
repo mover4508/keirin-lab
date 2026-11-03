@@ -83,3 +83,6 @@ ul.log{margin:6px 0 0;padding-left:1.2em;font-size:13px}
 footer.notice{margin-top:20px;font-size:12px;color:var(--muted);border-top:1px solid var(--line);padding-top:10px}
 footer.notice p{margin:0 0 4px}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+
+/* かんたん表示：開発に関係するものを隠す */
+body.simple .dev{display:none!important}

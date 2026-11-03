@@ -21,7 +21,9 @@ function fresh() { return { schema: 1, model: K.freshModel(), acc: K.freshAcc(),
 function load() {
   try { const o = JSON.parse(localStorage.getItem(KEY) || "null"); S = o && o.schema === 1 ? Object.assign(fresh(), o) : fresh(); }
   catch (e) { S = fresh(); }
+  if (typeof S.dev !== "boolean") S.dev = !!S.ownerToken;   // 開発者の端末は開発者向けの表示から始める
 }
+function applyDev() { document.body.classList.toggle("simple", !S.dev); $("in-dev").value = S.dev ? "1" : "0"; if (!S.dev && view === "learn") view = "pred"; }
 function headerText() {
   const sh = S.shared && S.shared.stats ? `みんなの学習 ${S.shared.stats.races}R` : "この端末の学習";
   return `${sh} ・ 自分 ${S.races.length}レース`;
@@ -210,13 +212,13 @@ $("b-predict").onclick = () => {
 function predCard(r) {
   const m = r.meta;
   return `<div class="card"><div class="bethead"><h2>${esc(m.venue || "")} ${m.raceNo || ""}R ・ ${esc(m.grade || "")} ・ ${r.riders.length}車</h2>${clsPill(r.cls)}</div>
-  <p class="note">区分の根拠：${esc(r.clsWhy)}</p>
-  <p class="note">${r.mode === "past" ? "過去レース検証" : "リアルタイム予想"} ・ オッズ：${r.hasOdds ? esc(r.oddsType) : "なし"} ・ 使ったモデル：${esc(r.modelSource || ("v" + r.modelVer))}</p>
-  <p class="note">予想確定 ${new Date(r.lockedAt).toLocaleString("ja-JP")} ・ 指紋 ${r.fp}（あとから変更できません）</p>
+  <p class="note dev">区分の根拠：${esc(r.clsWhy)}</p>
+  <p class="note dev">${r.mode === "past" ? "過去レース検証" : "リアルタイム予想"} ・ オッズ：${r.hasOdds ? esc(r.oddsType) : "なし"} ・ 使ったモデル：${esc(r.modelSource || ("v" + r.modelVer))}</p>
+  <p class="note">予想確定 ${new Date(r.lockedAt).toLocaleString("ja-JP")}<span class="dev"> ・ 指紋 ${r.fp}</span>（あとから変更できません）</p>
   <h3>買い目 ${r.bets.length}点（${r.bets.length * 100}円）</h3>
-  ${r.bets.map(b => `<div class="bet"><div class="bethead">${comboHtml(b.c)}<span class="prob">推定 ${pct(b.p)}${b.odds ? ` ・ ${b.odds}倍` : ""}${b.ev != null ? ` ・ 期待値 ${b.ev.toFixed(2)}` : ""}</span></div>
+  ${r.bets.map(b => `<div class="bet"><div class="bethead">${comboHtml(b.c)}<span class="prob"><span class="dev">推定 ${pct(b.p)} ・ </span>${b.odds ? `${b.odds}倍` : ""}<span class="dev">${b.ev != null ? ` ・ 期待値 ${b.ev.toFixed(2)}` : ""}</span></span></div>
     <div class="why">${b.win.map(x => `<b class="w">勝因</b><span>${esc(x)}</span>`).join("")}${b.risk.map(x => `<b class="l">敗因</b><span>${esc(x)}</span>`).join("")}</div></div>`).join("")}
-  <details><summary>総合評価の順位</summary><div class="tbl">${rankTable(r)}</div></details></div>`;
+  <details class="dev"><summary>総合評価の順位</summary><div class="tbl">${rankTable(r)}</div></details></div>`;
 }
 function rankTable(r) {
   const LI = K.lineInfo(r);
@@ -275,8 +277,8 @@ function resultCard(r, meta) {
     <div class="kpis"><div class="kpi"><div class="k">払戻</div><div class="v">${yen(R.ret)}</div></div><div class="kpi"><div class="k">収支</div><div class="v" style="color:${bal >= 0 ? "var(--good)" : "var(--bad)"}">${bal >= 0 ? "+" : ""}${yen(bal)}</div></div></div>
     ${R.analysis.map(a => `<div class="bet"><div class="bethead">${comboHtml(a.c)}<span class="pill ${a.hit ? "kata" : "are"}">${a.hit ? "的中" : "外れ"}</span></div>
       <div class="why">${a.win.map(x => `<b class="w">勝因</b><span>${esc(x)}</span>`).join("")}${a.lose.map(x => `<b class="l">敗因</b><span>${esc(x)}</span>`).join("")}</div></div>`).join("")}
-    <p class="note">学習に反映：${R.learn.map(esc).join(" ／ ")} ・ モデル v${S.model.ver}</p>
-    ${meta ? `<div class="msg warn"><b>全体の見直し（${meta.race}R時点）</b><ul class="log">${meta.lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul></div>` : ""}</div>`;
+    <p class="note dev">学習に反映：${R.learn.map(esc).join(" ／ ")} ・ モデル v${S.model.ver}</p>
+    ${meta ? `<div class="msg warn dev"><b>全体の見直し（${meta.race}R時点）</b><ul class="log">${meta.lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul></div>` : ""}</div>`;
 }
 
 /* ========== 成績タブ ========== */
@@ -306,10 +308,10 @@ function renderStats() {
     <div class="kpi"><div class="k">収支</div><div class="v">${(all.ret - all.inv).toLocaleString()}円</div></div></div>
   <div class="card"><h2>種類別</h2><p class="note">オッズの種類が違うので、リアルタイムと過去レース検証は分けて見ます。</p>
     <div class="tbl"><table><thead><tr><th>種類</th><th class="n">R</th><th class="n">的中率</th><th class="n">回収率</th><th class="n">収支</th></tr></thead><tbody>${row("リアルタイム", live)}${row("過去レース検証", past)}</tbody></table></div></div>
-  <div class="card"><h2>超えるべき基準</h2><p class="note">同じレースで、オッズの人気順に3点買った場合です。システムはこれを上回る必要があります。</p>
+  <div class="card dev"><h2>超えるべき基準</h2><p class="note">同じレースで、オッズの人気順に3点買った場合です。システムはこれを上回る必要があります。</p>
     <div class="tbl"><table><thead><tr><th></th><th class="n">R</th><th class="n">的中率</th><th class="n">回収率</th></tr></thead><tbody>
     <tr><td>人気順3点</td><td class="n">${base.length}</td><td class="n">${base.length ? pct(bh / base.length) : "-"}</td><td class="n">${base.length ? pct(bret / (base.length * 300)) : "-"}</td></tr></tbody></table></div></div>
-  <div class="card"><h2>区分・グレード・車立別</h2>${rows.length ? `<div class="tbl"><table><thead><tr><th>区分</th><th>グレード</th><th class="n">車立</th><th class="n">R</th><th class="n">的中率</th><th class="n">回収率</th></tr></thead><tbody>${rows.map(x => `<tr><td>${clsPill(x.k[0])}</td><td>${esc(x.k[1])}</td><td class="n">${x.k[2]}</td><td class="n">${x.o.n}</td><td class="n">${pct(x.o.h / x.o.n)}</td><td class="n">${pct(x.o.ret / x.o.inv)}</td></tr>`).join("")}</tbody></table></div>` : `<p class="note">結果を照合すると、ここに集計されます。</p>`}</div>
+  <div class="card dev"><h2>区分・グレード・車立別</h2>${rows.length ? `<div class="tbl"><table><thead><tr><th>区分</th><th>グレード</th><th class="n">車立</th><th class="n">R</th><th class="n">的中率</th><th class="n">回収率</th></tr></thead><tbody>${rows.map(x => `<tr><td>${clsPill(x.k[0])}</td><td>${esc(x.k[1])}</td><td class="n">${x.k[2]}</td><td class="n">${x.o.n}</td><td class="n">${pct(x.o.h / x.o.n)}</td><td class="n">${pct(x.o.ret / x.o.inv)}</td></tr>`).join("")}</tbody></table></div>` : `<p class="note">結果を照合すると、ここに集計されます。</p>`}</div>
   <div class="card"><h2>最近の結果</h2>${done.length ? `<div class="tbl"><table><thead><tr><th>レース</th><th>結果</th><th></th><th class="n">収支</th></tr></thead><tbody>${done.slice(0, 30).map(r => `<tr><td>${esc(r.meta.date.slice(5))} ${esc(r.meta.venue)}${r.meta.raceNo}R</td><td>${comboHtml(r.result.order)}</td><td><span class="pill ${r.result.hit ? "kata" : "are"}">${r.result.hit ? "的中" : "外れ"}</span></td><td class="n">${(r.result.ret - r.result.inv).toLocaleString()}</td></tr>`).join("")}</tbody></table></div>` : `<p class="note">まだありません。</p>`}</div>`;
 }
 
@@ -408,7 +410,7 @@ async function pullShared() {
 function renderShare() {
   const st = S.shared;
   $("share-status").innerHTML = !URL_() ? "共有学習のサーバーは準備中です。いまは、この端末の学習だけで予想します。"
-    : st ? `みんなの学習：${Number(st.stats.races) || 0}レース・モデル v${Number(st.model.ver) || 0}（${esc(new Date(st.builtAt).toLocaleString("ja-JP"))}に作成）。予想にはこのモデルを使います。${S.outbox.length ? `<br>送信待ち：${S.outbox.length}レース` : ""}`
+    : st ? `みんなの学習：${Number(st.stats.races) || 0}レース分<span class="dev">・モデル v${Number(st.model.ver) || 0}（${esc(new Date(st.builtAt).toLocaleString("ja-JP"))}に作成）</span>。予想にはこの学習結果を使います。${S.outbox.length ? `<br>送信待ち：${S.outbox.length}レース` : ""}`
     : "まだ共有モデルを読み込んでいません。「今すぐ同期する」を押してください。";
   $("in-join").value = S.join === true ? "1" : S.join === false ? "0" : "";
   $("in-owner").value = S.ownerToken || "";
@@ -495,7 +497,8 @@ function render() {
   if (view === "res") renderPending(); if (view === "stats") renderStats(); if (view === "learn") renderLearn(); if (view === "set") { renderSet(); renderShare(); }
 }
 $("in-mode").onchange = modeNote;
+$("in-dev").onchange = () => { S.dev = $("in-dev").value === "1"; save(); applyDev(); render(); };
 $("b-clear").onclick = () => clearInputs(true);
-load(); modeNote(); save(); render();
+load(); applyDev(); modeNote(); save(); render();
 if (URL_()) { flush(); pullShared().then(() => { $("sync").textContent = headerText(); }); }
 })();

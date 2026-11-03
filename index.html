@@ -16,13 +16,13 @@
 <body>
 <header class="top">
   <h1>競輪3連単ラボ</h1>
-  <span class="sync" id="sync"></span>
+  <span class="sync dev" id="sync"></span>
 </header>
 <nav class="tabs" role="tablist">
   <button role="tab" data-v="pred" aria-selected="true">予想</button>
   <button role="tab" data-v="res" aria-selected="false">照合</button>
   <button role="tab" data-v="stats" aria-selected="false">成績</button>
-  <button role="tab" data-v="learn" aria-selected="false">学習</button>
+  <button role="tab" data-v="learn" aria-selected="false" class="dev">学習</button>
   <button role="tab" data-v="set" aria-selected="false">保存・説明</button>
 </nav>
 
@@ -119,9 +119,9 @@
     <p class="note">予想・成績・学習の内容は、この端末のブラウザに保存されます。機種変更やブラウザのデータ削除に備えて、ときどきファイルに保存してください。</p>
     <div class="btns">
       <button class="btn sub" id="b-export">全データを保存</button>
-      <button class="btn sub" id="b-learnexport">学習用データを保存</button>
+      <button class="btn sub dev" id="b-learnexport">学習用データを保存</button>
     </div>
-    <p class="note">「学習用データ」は、発走前の出走表・オッズと結果だけです。個人の収支は含みません。共有学習の仕組みができたら、これを送ってもらう形になります。</p>
+    <p class="note dev">「学習用データ」は、発走前の出走表・オッズと結果だけです。個人の収支は含みません。共有学習の仕組みができたら、これを送ってもらう形になります。</p>
     <label class="f" for="in-import">保存したファイルから復元
       <input type="file" id="in-import" accept="application/json,.json">
     </label>
@@ -135,7 +135,7 @@
     </label>
     <button class="btn sub" id="b-sync">今すぐ同期する</button>
     <div id="sync-msg"></div>
-    <details>
+    <details class="dev">
       <summary>開発者向け</summary>
       <label class="f" for="in-owner">開発者用の合言葉（この端末だけに保存。人に教えないでください）<input id="in-owner" type="password" autocomplete="off"></label>
       <button class="btn sub" id="b-claim">合言葉を受け取る（最初の1回だけ）</button>
@@ -158,7 +158,7 @@
       <li>あなたが貼り付けた、チャリロトの出走表と3連単オッズ</li>
       <li>あなたが貼り付けた、KEIRIN.JPの結果（照合と学習にだけ使い、予想には使いません）</li>
       <li>照合済みのレースから積み上げた蓄積データ</li>
-      <li>開発時に調べて固定した参照データ（バンクの長さ・直線・カント・向き、決まり手の傾向など）</li>
+      <li>競輪場ごとの参照データ（バンクの長さ・向き、決まり手の傾向など）</li>
       <li>気象データ（Open-Meteo）。天気・風の自動取得にだけ使います。送るのは競輪場のおおよその位置と日付だけです</li>
     </ul>
     <h3>守っているルール</h3>
@@ -168,8 +168,14 @@
       <li>アプリはWeb検索やほかのサイトの閲覧をしません。例外は天気だけで、気象データ（Open-Meteo）から天気と風を取ります。ほかのサイトの予想・オッズ・結果は見ません。</li>
       <li>他サイトの予想印は、予想に使いません。</li>
     </ul>
-    <h3>36エンジン</h3>
-    <div class="tbl" id="engine-list"></div>
+    <h3 class="dev">36エンジン</h3>
+    <div class="tbl dev" id="engine-list"></div>
+  </div>
+  <div class="card">
+    <h2>表示の切り替え</h2>
+    <label class="f" for="in-dev">表示
+      <select id="in-dev"><option value="0">かんたん表示</option><option value="1">開発者向けの表示（エンジンや学習の中身も見る）</option></select>
+    </label>
   </div>
   <div class="card">
     <h2>最初からやり直す</h2>
