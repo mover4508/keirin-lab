@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>競輪3連単ラボ</title>
+<meta name="description" content="チャリロトの出走表とオッズを貼るだけで、36エンジンが3連単を1〜3点予想し、結果と照合して学習します。">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <h1>競輪3連単ラボ</h1>
+  <span class="sync" id="sync"></span>
+</header>
+<nav class="tabs" role="tablist">
+  <button role="tab" data-v="pred" aria-selected="true">予想</button>
+  <button role="tab" data-v="res" aria-selected="false">照合</button>
+  <button role="tab" data-v="stats" aria-selected="false">成績</button>
+  <button role="tab" data-v="learn" aria-selected="false">学習</button>
+  <button role="tab" data-v="set" aria-selected="false">保存・説明</button>
+</nav>
+
+<main>
+<!-- 予想 -->
+<section class="view" id="v-pred">
+  <div class="card">
+    <h2>出走表とオッズを貼り付け</h2>
+    <div class="row">
+      <label class="f" for="in-mode">レースの種類
+        <select id="in-mode">
+          <option value="live">リアルタイム予想（締め切り前オッズ）</option>
+          <option value="past">過去レース検証（確定オッズ）</option>
+        </select>
+      </label>
+    </div>
+    <p class="note" id="mode-note"></p>
+    <label class="f" for="in-paste">チャリロトの「出走表詳細」と「オッズ表詳細」をまとめて貼り付け
+      <textarea id="in-paste" placeholder="出走表とオッズ表のページを、そのままコピーして貼り付けてください"></textarea>
+    </label>
+    <details class="cond">
+      <summary>天候と風（分かれば）</summary>
+      <div class="row">
+        <label class="f" for="in-weather">天候<select id="in-weather"><option value="">分からない</option><option>晴</option><option>曇</option><option>雨</option></select></label>
+        <label class="f" for="in-winddir">風向き<select id="in-winddir">
+          <option value="">分からない・弱い</option>
+          <option value="homeHead">ホーム向かい風（バック追い風）</option>
+          <option value="backHead">ホーム追い風（バック向かい風）</option>
+          <option value="crossHB">横風（ホーム→バック）</option>
+          <option value="crossBH">横風（バック→ホーム）</option>
+        </select></label>
+        <label class="f" for="in-windstr">風の強さ<select id="in-windstr"><option value="">ふつう</option><option value="強">強い</option></select></label>
+      </div>
+      <p class="note">発走前に分かる天候だけを入れてください。結果ページの天候は使いません。</p>
+    </details>
+    <button class="btn" id="b-parse">読み取る</button>
+    <div id="parse-msg"></div>
+  </div>
+  <div class="card hide" id="check-card">
+    <h2 id="check-title"></h2>
+    <div class="tbl" id="check-table"></div>
+    <label class="f" for="in-lineup">並び（周回予想）。違っていれば直してください（例 1-5 / 7-2-4 / 6-3）
+      <input id="in-lineup">
+    </label>
+    <div id="check-warn"></div>
+    <button class="btn" id="b-predict">予想を確定する</button>
+    <p class="note">予想は確定したら変えられません。同じレースの予想し直しもできません。</p>
+  </div>
+  <div id="pred-out"></div>
+</section>
+
+<!-- 照合 -->
+<section class="view hide" id="v-res">
+  <div class="card">
+    <h2>照合するレース</h2>
+    <div class="list" id="pending-list"></div>
+  </div>
+  <div class="card hide" id="res-card">
+    <h2 id="res-title"></h2>
+    <label class="f" for="in-result">KEIRIN.JPの結果ページを貼り付け
+      <textarea id="in-result" placeholder="結果ページをそのままコピーして貼り付けてください（払戻金と着順の部分が必要です）"></textarea>
+    </label>
+    <button class="btn sub" id="b-readres">結果を読み取る</button>
+    <div id="res-msg"></div>
+    <button class="btn hide" id="b-judge">照合して学習する</button>
+  </div>
+  <div id="res-out"></div>
+</section>
+
+<section class="view hide" id="v-stats"></section>
+<section class="view hide" id="v-learn"></section>
+
+<!-- 保存・説明 -->
+<section class="view hide" id="v-set">
+  <div class="card">
+    <h2>データの保存</h2>
+    <p class="note">予想・成績・学習の内容は、この端末のブラウザに保存されます。機種変更やブラウザのデータ削除に備えて、ときどきファイルに保存してください。</p>
+    <div class="btns">
+      <button class="btn sub" id="b-export">全データを保存</button>
+      <button class="btn sub" id="b-learnexport">学習用データを保存</button>
+    </div>
+    <p class="note">「学習用データ」は、発走前の出走表・オッズと結果だけです。個人の収支は含みません。共有学習の仕組みができたら、これを送ってもらう形になります。</p>
+    <label class="f" for="in-import">保存したファイルから復元
+      <input type="file" id="in-import" accept="application/json,.json">
+    </label>
+    <div id="io-msg"></div>
+  </div>
+  <div class="card">
+    <h2>このアプリについて</h2>
+    <h3>使う情報</h3>
+    <ul class="plain">
+      <li>あなたが貼り付けた、チャリロトの出走表と3連単オッズ</li>
+      <li>あなたが貼り付けた、KEIRIN.JPの結果（照合と学習にだけ使い、予想には使いません）</li>
+      <li>照合済みのレースから積み上げた蓄積データ</li>
+      <li>開発時に調べて固定した参照データ（バンクの長さ・直線・カント、決まり手の傾向など）</li>
+    </ul>
+    <h3>守っているルール</h3>
+    <ul class="plain">
+      <li>レースの結果を先に見て予想することは一切しません。貼り付けた表に結果が含まれていると、読み取りを止めます。</li>
+      <li>予想は確定したら変えられません。</li>
+      <li>アプリはWeb検索やほかのサイトの閲覧をしません。</li>
+      <li>他サイトの予想印は、予想に使いません。</li>
+    </ul>
+    <h3>36エンジン</h3>
+    <div class="tbl" id="engine-list"></div>
+  </div>
+  <div class="card">
+    <h2>最初からやり直す</h2>
+    <p class="note">この端末に保存した予想・成績・学習をすべて消します。元に戻せません。</p>
+    <button class="btn danger" id="b-reset">すべて消す</button>
+    <div id="reset-confirm" class="hide">
+      <p class="msg err">本当に消しますか。保存していないデータは戻りません。</p>
+      <div class="btns"><button class="btn danger" id="b-reset-yes">消す</button><button class="btn sub" id="b-reset-no">やめる</button></div>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer class="notice">
+  <p>的中を保証するものではありません。回収率は100%を下回るのが普通です。車券の購入は20歳になってから。無理のない範囲でお楽しみください。</p>
+  <p>このアプリは外部の情報や結果を見ていません。使うのは、貼り付けた表と蓄積データだけです。</p>
+</footer>
+
+<script src="refdata.js"></script>
+<script src="parser.js"></script>
+<script src="engine.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
