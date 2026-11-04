@@ -46,5 +46,13 @@ const f0 = P0.find(x => x.c.join("-") === d0.result.order.join("-"));
 check("見直しの高速計算が通常の計算と一致", Math.abs(Math.exp(K.logLik(d0, full.model)) - f0.p) < 1e-12);
 // 先読み防止：過去レース検証は、そのレースより前のデータだけ
 check("古いエンジンの形の共有モデルでも予想できる", (() => { const m = K.freshModel(); delete m.lam2; delete m.lam3; delete m.kf; const x = { meta: r.meta, riders: r.riders, lineup: r.lineup, odds: r.odds, cond: {} }; K.predict(x, m, K.freshAcc(), {}); return x.bets.length > 0; })());
+// 保存を軽くしても、予想は同じ（近況の一覧は開催の成績から作り直す）
+const slim = { meta: r.meta, riders: r.riders.map(({ recent, ...x }) => x), lineup: r.lineup, odds: r.odds, cond: {} };
+K.predict(slim, K.freshModel(), K.freshAcc(), { mode: "past" });
+check("近況の一覧を保存しなくても、予想は同じ", JSON.stringify(slim.bets.map(b => b.c)) === JSON.stringify(race.bets.map(b => b.c)) && JSON.stringify(slim.Z) === JSON.stringify(race.Z));
+// 級の種類ごとの市場の比重が使われる
+const mA = K.freshModel(); mA.alphaCat = { [race.cat]: 0.1 };
+const xA = { meta: r.meta, riders: r.riders, lineup: r.lineup, odds: r.odds, cond: {} }; K.predict(xA, mA, K.freshAcc(), {});
+check("級の種類ごとの市場の比重が使われる", Math.abs(xA.bets[0].p - race.bets[0].p) > 1e-6);
 console.log(`\n${ok}件合格・${ng}件不合格`);
 process.exit(ng ? 1 : 0);

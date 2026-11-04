@@ -501,7 +501,7 @@ const PRIOR = {
 };
 // 番組・条件による集中度の補正（初期値。見直しで調整する）
 const KF0 = { final: 1.1, tokusen: 0.9, ippan: 0.95, seven: 1.05, rain: 1.05, wind: 1.05 };
-const ENGINE_VER = 5;
+const ENGINE_VER = 6;
 function freshModel() {
   const w = Object.fromEntries(PER.map(e => [e, PRIOR[e]]));
   return {
@@ -634,7 +634,8 @@ function computeEngines(race, acc, opts) {
     // E14 車番・枠（番組編成の評価・内枠の有利）
     raw.E14[i] = -r.no;
     // E15 近況着順（落・失は最下位扱い）
-    const rec = (r.recent || []).map(x => typeof x.res === "number" ? x.res : n);
+    const recent = r.recent && r.recent.length ? r.recent : (r.meets || []).flatMap(mt => window_parseRecent(mt.res));
+    const rec = recent.map(x => typeof x.res === "number" ? x.res : n);
     raw.E15[i] = rec.length ? -mean(rec) : null;
     // E16 調子の流れ：前々回より前回が良いか＋前回見たときからの得点の変化
     const done = (r.meets || []).filter(mt => mt.res);
@@ -709,7 +710,7 @@ function computeEngines(race, acc, opts) {
 // 近況の文字列を読む（parser.js と同じ規則）
 function window_parseRecent(s) {
   const out = []; if (!s) return out;
-  const re = /([予準決般特抜選初優一順秀ガ]?)([1-9]|落|失|欠|棄|故)/g; let m;
+  const re = /([予準決般特抜選初優一二三順秀ガチ]?)([1-9]|落|失|欠|棄|故)/g; let m;
   while ((m = re.exec(s))) out.push({ type: m[1] || null, res: /[1-9]/.test(m[2]) ? +m[2] : m[2] });
   return out;
 }
@@ -799,7 +800,8 @@ function perms(race, comb, model, LI) {
   const q = marketProbs(race.odds);
   if (q) {
     let tt = 0;
-    out.forEach(x => { const qq = q[x.c.join("-")] || 1e-5; x.q = qq; x.p = Math.exp(model.alpha * Math.log(qq) + (1 - model.alpha) * Math.log(x.m)); tt += x.p; });
+    const al = alphaOf(race, model);
+    out.forEach(x => { const qq = q[x.c.join("-")] || 1e-5; x.q = qq; x.p = Math.exp(al * Math.log(qq) + (1 - al) * Math.log(x.m)); tt += x.p; });
     out.forEach(x => x.p /= tt);
   } else out.forEach(x => x.p = x.m);
   out.sort((x, y) => y.p - x.p);
@@ -808,6 +810,11 @@ function perms(race, comb, model, LI) {
 
 // 1つの組み合わせの確率だけを求める（見直しの計算用。perms と同じ順番・同じ式で計算するので、値は完全に同じ）
 // 組み合わせの並び・スジの当てはまり・市場の確率の対数は、レースごとに1回だけ用意しておく（tab）
+// オッズ（市場）の比重：級の種類ごとの値があればそれを使う（見直しで、その級のレースが10R以上あるときに作られる）
+function alphaOf(race, model) {
+  const c = race.cat || category(race), a = model.alphaCat && model.alphaCat[c];
+  return typeof a === "number" ? a : model.alpha;
+}
 function permTab(race, LI, q, target) {
   const R = race.riders, A = [], B = [], C = [], f1 = [], f2 = [], lq = [];
   let ti = -1;
@@ -841,7 +848,7 @@ function permTarget(race, comb, model, tab) {
   for (let i = 0; i < n; i++) ms[i] /= t;
   if (tab.qt == null) return { p: ms[tab.ti], m: ms[tab.ti], q: null };
   let tt = 0, pt = 0;
-  const al = model.alpha, bl = 1 - model.alpha;
+  const al = alphaOf(race, model), bl = 1 - al;
   for (let i = 0; i < n; i++) { const v = Math.exp(al * lq[i] + bl * Math.log(ms[i])); tt += v; if (i === tab.ti) pt = v; }
   return { p: pt / tt, m: ms[tab.ti], q: tab.qt };
 }
@@ -982,10 +989,19 @@ function learn(race, result, model, acc, stats) {
   const lr = model.lr / (1 + 0.2 * (stats.lossStreak || 0));   // 連敗中は学習率を下げる
   const levels = [...chain(race.key).reverse(), "*|*|*"], moved = [];
   // 予想確率全体が実際の着順に近づく向き（対数尤度の勾配）を、全エンジン同時に求める
+  // オッズがあるときは、オッズと混ぜたあとの確率が実際の着順に近づく向き＝「オッズが見落としている部分」を学ぶ。
+  // 混ぜたあとの確率では、モデルの効きが (1−α) 倍に小さくなるので、(1−α) で割って学習の速さをそろえる。
+  // オッズがないときは、モデル単独の着順の確率で学ぶ。
   const w0 = effWeights(race.key, model), h = 0.01, grad = {};
-  const base = orderLogLik(race, w0, model, order);
+  const q = marketProbs(race.odds), al = alphaOf(race, model);
+  let LL;
+  if (q && al < 1) {
+    const tab = permTab(race, lineInfo(race), q, order.slice(0, 3).join("-"));
+    LL = w => { const f = permTarget(race, combine(race.Z, w, n), model, tab); return f ? Math.log(f.p) / (1 - al) : null; };
+  } else LL = w => orderLogLik(race, w, model, order);
+  const base = LL(w0);
   if (base != null) PER.forEach(e => {
-    const up = orderLogLik(race, { ...w0, [e]: w0[e] + h }, model, order), dn = orderLogLik(race, { ...w0, [e]: w0[e] - h }, model, order);
+    const up = LL({ ...w0, [e]: w0[e] + h }), dn = LL({ ...w0, [e]: w0[e] - h });
     grad[e] = (up - dn) / (2 * h);
   });
   for (const lv of levels) {
@@ -1067,14 +1083,14 @@ function metaLoop(races, model, stats) {
   const avg = m => done.reduce((a, r) => a + logLik(r, m, cache), 0) / done.length;
   const lines = []; let cur = avg(model);
   const KEYS = ["beta", "alpha", "syn", "lam2", "lam3"];
-  const snap = () => ({ ver: model.ver, cells: JSON.parse(JSON.stringify(model.cells)), kf: { ...(model.kf || KF0) }, ...Object.fromEntries(KEYS.map(k => [k, model[k]])) });
+  const snap = () => ({ ver: model.ver, cells: JSON.parse(JSON.stringify(model.cells)), kf: { ...(model.kf || KF0) }, alphaCat: { ...(model.alphaCat || {}) }, ...Object.fromEntries(KEYS.map(k => [k, model[k]])) });
   // 再実装：最良版と今を「同じ直近のレース」で測り直して比べ、悪化していたら最良版へ戻す
   if (model.best && model.best.cells) {
     const bm = { ...model, ...model.best, kf: model.best.kf || model.kf, th: model.th };
     KEYS.forEach(k => { if (bm[k] == null) bm[k] = model[k]; });
     const bl = avg(bm);
     if (cur < bl - 0.05) {
-      model.cells = JSON.parse(JSON.stringify(model.best.cells)); model.kf = { ...bm.kf };
+      model.cells = JSON.parse(JSON.stringify(model.best.cells)); model.kf = { ...bm.kf }; model.alphaCat = { ...(bm.alphaCat || {}) };
       KEYS.forEach(k => model[k] = bm[k]);
       lines.push(`直すべきもの：同じ${done.length}Rで比べて予測力が下がった（${cur.toFixed(3)} < ${bl.toFixed(3)}）ため最良版 v${model.best.ver} に戻した`);
       cur = avg(model);
@@ -1090,6 +1106,16 @@ function metaLoop(races, model, stats) {
   };
   tune("beta", [-0.15, 0.15], 0.5, 2.5, "集中度β");
   if (done.some(r => r.hasOdds)) tune("alpha", [-0.1, 0.1], 0.1, 0.95, "市場の比重α");
+  // 級の種類ごとの市場の比重：その級のオッズありのレースが直近に10R以上あるときだけ調整する
+  const CATL = { S: "S級", A: "A級", CH: "チャレンジ", L: "ガールズ" };
+  Object.keys(CATL).forEach(c => {
+    if (done.filter(r => r.hasOdds && (r.cat || category(r)) === c).length < 10) return;
+    const v0 = model.alphaCat && typeof model.alphaCat[c] === "number" ? model.alphaCat[c] : model.alpha;
+    let bestV = v0, bestL = cur;
+    for (const d of [-0.1, 0.1]) { const val = clamp(v0 + d, 0.1, 0.95); const L = avg({ ...model, alphaCat: { ...(model.alphaCat || {}), [c]: val } }); if (L > bestL + 0.002) { bestL = L; bestV = val; } }
+    model.alphaCat = { ...(model.alphaCat || {}), [c]: bestV };
+    if (bestV !== v0) { lines.push(`調整すべきもの：${CATL[c]}の市場の比重α ${v0.toFixed(2)} → ${bestV.toFixed(2)}`); cur = bestL; }
+  });
   tune("syn", [-0.05, 0.05], 0, 0.5, "スジ決着の補正");
   tune("lam2", [-0.05, 0.05], 0.5, 1, "2着の補正");
   tune("lam3", [-0.05, 0.05], 0.4, 1, "3着の補正");

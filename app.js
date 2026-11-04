@@ -43,12 +43,31 @@ function load(text) {
   catch (e) { S = fresh(); }
   if (typeof S.dev !== "boolean") S.dev = !!S.ownerToken;   // 開発者の端末は開発者向けの表示から始める
   S.races.forEach(r => { delete r.pasted; });                // 貼り付けた原文は保存しない（容量の節約。読み取った中身は残る）
-  // エンジンが新しくなったら、この端末の学習を、照合済みのレースから時系列順に作り直す
-  if (!S.model.engineVer || S.model.engineVer < K.ENGINE_VER) {
-    const st = K.replay(doneItems(S.races));
-    S.model = st.model; S.acc = st.acc; S.metaLog = st.metaLog.concat([{ at: new Date().toISOString(), race: st.stats.races, ver: st.model.ver, ll: 0, lines: [`エンジンを v${K.ENGINE_VER} に更新し、照合済みの${st.stats.races}Rで時系列順に学習し直した`] }]).slice(0, 50);
-  }
+  S.races.forEach(slimRace);
 }
+// 保存を軽くする：表示にしか使わない途中の計算結果と、開催の成績から作り直せる近況の一覧を消す
+function slimRace(r) {
+  delete r.w; delete r.top;
+  (r.riders || []).forEach(x => { delete x.recent; });
+  return r;
+}
+// エンジンが新しくなったら、この端末の学習を、照合済みのレースから時系列順に作り直す。
+// 少しずつ計算して、その間も画面を使えるようにする（予想の確定と照合だけは、終わるまで待ってもらう）
+let rebuilding = false;
+async function upgradeEngine() {
+  if (S.model.engineVer && S.model.engineVer >= K.ENGINE_VER) return;
+  rebuilding = true;
+  const items = doneItems(S.races), st = { model: K.freshModel(), acc: K.freshAcc(), stats: { races: 0, hits: 0, invested: 0, returned: 0, lossStreak: 0 }, done: [], metaLog: [] };
+  for (let i = 0; i < items.length; i += 10) {
+    msg("backup-note", `予想エンジンが新しくなったので、この端末の学習を作り直しています（${i}/${items.length}レース）。予想の確定と照合は、終わるまでお待ちください。`, "warn");
+    K.replay(items.slice(i, i + 10), st);
+    await new Promise(r => setTimeout(r, 0));
+  }
+  S.model = st.model; S.acc = st.acc;
+  S.metaLog = st.metaLog.concat([{ at: new Date().toISOString(), race: st.stats.races, ver: st.model.ver, ll: 0, lines: [`エンジンを v${K.ENGINE_VER} に更新し、照合済みの${st.stats.races}Rで時系列順に学習し直した`] }]).slice(0, 50);
+  rebuilding = false; msg("backup-note", ""); save();
+}
+function waitRebuild(id) { if (rebuilding) { msg(id, "この端末の学習を作り直しています。数秒待ってから、もう一度押してください。", "warn"); return true; } return false; }
 function doneItems(races) { return races.filter(r => r.status === "done").map(r => learningItem(r)).sort(K.chrono); }
 // 過去レース検証用：そのレースより前のレースだけで学習した状態（先読み防止）
 // 前の日までのレースと、同じ日・同じ場の前のレースだけを使う。続きから計算できるときは続きから計算する
@@ -240,6 +259,7 @@ function renderCheck() {
   $("b-predict").disabled = false;
 }
 $("b-predict").onclick = () => {
+  if (waitRebuild("parse-msg")) return;
   if (!draft) return;
   const r = draft.parsed;
   draft.mode = $("in-mode").value;
@@ -268,6 +288,7 @@ $("b-predict").onclick = () => {
     race.modelSource = useShared ? `みんなの学習 v${Number(S.shared.model.ver) || 0}（${Number(S.shared.stats.races) || 0}R・${new Date(S.shared.builtAt).toLocaleString("ja-JP")}時点）` : "この端末の学習";
   }
   race.lockedAt = new Date().toISOString(); race.fp = fingerprint(race);
+  slimRace(race);
   S.races.unshift(race); save();
   $("b-predict").disabled = true; draft = null;
   clearInputs(false);
@@ -364,6 +385,7 @@ $("b-readres").onclick = () => {
   $("b-judge").classList.remove("hide");
 };
 $("b-judge").onclick = () => {
+  if (waitRebuild("res-msg")) return;
   if (!sel || !readRes) return;
   if (sel.fp && fingerprint(sel) !== sel.fp) { msg("res-msg", "この予想は確定後に変更された形跡があるため、照合できません。", "err"); return; }
   const r = sel, res = readRes;
@@ -415,7 +437,7 @@ function renderStats() {
   });
   const bh = base.filter(x => x.hit).length, bret = base.reduce((a, x) => a + x.ret, 0);
   const cancelled = S.races.filter(r => r.status === "cancelled").length;
-  $("v-stats").innerHTML = `<div class="kpis">
+  $("v-stats").innerHTML = `${progressCard(done.length)}<div class="kpis">
     <div class="kpi"><div class="k">レース数</div><div class="v">${all.n}</div></div>
     <div class="kpi"><div class="k">的中率</div><div class="v">${all.n ? pct(all.h / all.n) : "-"}</div></div>
     <div class="kpi"><div class="k">回収率</div><div class="v">${all.inv ? pct(all.ret / all.inv) : "-"}</div></div>
@@ -427,10 +449,32 @@ function renderStats() {
     <tr><td>人気順3点</td><td class="n">${base.length}</td><td class="n">${base.length ? pct(bh / base.length) : "-"}</td><td class="n">${base.length ? pct(bret / (base.length * 300)) : "-"}</td></tr></tbody></table></div></div>
   <div class="card dev"><h2>区分・グレード・車立別</h2>${rows.length ? `<div class="tbl"><table><thead><tr><th>区分</th><th>グレード</th><th class="n">車立</th><th class="n">R</th><th class="n">的中率</th><th class="n">回収率</th></tr></thead><tbody>${rows.map(x => `<tr><td>${clsPill(x.k[0])}</td><td>${esc(x.k[1])}</td><td class="n">${x.k[2]}</td><td class="n">${x.o.n}</td><td class="n">${pct(x.o.h / x.o.n)}</td><td class="n">${pct(x.o.ret / x.o.inv)}</td></tr>`).join("")}</tbody></table></div>` : `<p class="note">結果を照合すると、ここに集計されます。</p>`}</div>
   ${cancelled ? `<p class="note">取り消した予想：${cancelled}件（成績と学習には入っていません）</p>` : ""}
+  <div class="card dev"><h2>締め切り前オッズと確定配当のずれ</h2><p class="note">リアルタイム予想で、実際に来た組み合わせについて、貼った時点のオッズと確定した配当を比べます。1より大きいほど、締め切りまでに配当が上がった（人気が下がった）ことを表します。</p>${driftTable(done)}</div>
   <div class="card dev"><h2>予想確率の当たり具合</h2><p class="note">買い目に付けた確率どおりに当たっているかを見ます。「予想の合計」と「実際の的中」が近いほど、確率が正確です。</p>${calib(done)}</div>
   <div class="card"><h2>最近の結果</h2>${done.length ? `<div class="tbl"><table><thead><tr><th>レース</th><th>結果</th><th></th><th class="n">収支</th></tr></thead><tbody>${done.slice(0, 30).map(r => `<tr><td>${esc(r.meta.date.slice(5))} ${esc(r.meta.venue)}${r.meta.raceNo}R</td><td>${comboHtml(r.result.order)}</td><td><span class="pill ${r.result.hit ? "kata" : "are"}">${r.result.hit ? "的中" : "外れ"}</span></td><td class="n">${(r.result.ret - r.result.inv).toLocaleString()}</td></tr>`).join("")}</tbody></table></div>` : `<p class="note">まだありません。</p>`}</div>`;
 }
 
+function progressCard(n) {
+  const goals = [[30, "モデルとオッズの予想力を比べ始める"], [50, "最初の本格的な分析"], [100, "エンジンの整理と、仮置きの値の見直し"]];
+  const next = goals.find(g => n < g[0]);
+  const m = S.shared && S.shared.model ? S.shared.model : S.model, logs = (S.shared && S.shared.metaLog && S.shared.metaLog.length ? S.shared.metaLog : S.metaLog) || [];
+  const cmp = logs.map(l => (l.lines || []).find(x => /予想力の比べ/.test(x))).find(Boolean);
+  const al = Number(m.alpha), alc = m.alphaCat ? Object.entries(m.alphaCat).map(([k, v]) => `${({ S: "S級", A: "A級", CH: "チャレンジ", L: "ガールズ" })[k] || k} ${Number(v).toFixed(2)}`).join("・") : "";
+  return `<div class="card"><h2>進み具合</h2>
+    <p class="note">照合したレース：${n}R${next ? `。次の目安は ${next[0]}R（${next[1]}）` : "。最初の目安はすべて達成しました"}</p>
+    <div class="bar"><span style="width:${Math.min(100, n)}%"></span></div>
+    <p class="note">いまの予想は、オッズを${al >= 0.85 ? "ほぼそのまま信用しています（このアプリ独自の見立ては、まだ控えめです）" : al >= 0.6 ? "重く見ながら、このアプリの見立ても加えています" : "参考にしつつ、このアプリの見立てを中心にしています"}。</p>
+    <p class="note dev">市場の比重α ${al.toFixed(2)}${alc ? `（級の種類ごと：${alc}）` : ""}・買い目の選び方：${m.evMode ? "期待値順" : "確率順"}${cmp ? `<br>${esc(cmp)}` : ""}</p></div>`;
+}
+function driftTable(done) {
+  const xs = done.filter(r => r.mode !== "past" && r.hasOdds).map(r => {
+    const k = r.result.order.join("-"), o = r.odds[k], p = (r.result.pays || []).find(x => x.combo.join("-") === k);
+    return o && p ? p.pay / 100 / o : null;
+  }).filter(x => x != null && isFinite(x)).sort((a, b) => a - b);
+  if (!xs.length) return `<p class="note">リアルタイム予想を照合すると、ここに集計されます。</p>`;
+  const med = xs[Math.floor(xs.length / 2)], avg = xs.reduce((a, b) => a + b, 0) / xs.length;
+  return `<p class="note">${xs.length}レース：確定配当は、貼った時点のオッズの 中央値 ${med.toFixed(2)}倍・平均 ${avg.toFixed(2)}倍</p>`;
+}
 function calib(done) {
   const bins = [[0, 0.02, "2%未満"], [0.02, 0.05, "2〜5%"], [0.05, 0.1, "5〜10%"], [0.1, 0.2, "10〜20%"], [0.2, 1.01, "20%以上"]];
   const rows = bins.map(([lo, hi, lab]) => {
@@ -506,7 +550,7 @@ function renderSet() {
 /* ========== みんなの学習（共有学習サーバー） ========== */
 const URL_ = () => window.KEIRIN_SHARED_URL || "";
 function learningItem(r) {
-  return { raceKey: r.rkey, oddsType: r.oddsType, meta: r.meta, riders: r.riders, lineup: r.lineup, odds: r.odds, cond: r.cond,
+  return { raceKey: r.rkey, oddsType: r.oddsType, meta: r.meta, riders: r.riders.map(({ recent, ...x }) => x), lineup: r.lineup, odds: r.odds, cond: r.cond,
     result: { order: r.result.order, pays: r.result.pays, finishers: r.result.finishers } };
 }
 function enqueue(r) { if (!S.outbox.some(x => x.raceKey === r.rkey)) S.outbox.push(learningItem(r)); }
@@ -651,6 +695,7 @@ $("b-clear").onclick = () => clearInputs(true);
 (async () => {
   const { text, moved } = await readStore();
   load(text); applyDev(); modeNote(); save(); render();
+  await upgradeEngine();
   loadPastCache();
   if (moved) { await saveChain; try { localStorage.removeItem(KEY); } catch (e) {} }   // 引っ越しが終わったら、古い場所のデータを消す
   if (URL_()) { flush(); pullShared().then(() => { $("sync").textContent = headerText(); }); }
