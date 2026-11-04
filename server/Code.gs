@@ -269,7 +269,7 @@ function rebuild_() {
     if (stats.races % 10 === 0) { var m = KEngine.metaLoop(done, model, stats); if (m) metaLog.unshift(m); }
     if (done.length > 60) done.length = 60;
   });
-  var out = { app: "競輪3連単ラボ", kind: "shared", builtAt: new Date().toISOString(), engineVer: 2,
+  var out = { app: "競輪3連単ラボ", kind: "shared", builtAt: new Date().toISOString(), engineVer: KEngine.ENGINE_VER,
     stats: stats, conflicts: conflicts, model: model, acc: acc, metaLog: metaLog.slice(0, 20) };
   writeModel_(JSON.stringify(out));
   var st = { at: new Date().toISOString(), owner: ownerN, public: publicN, waiting: waiting, conflicts: conflicts,

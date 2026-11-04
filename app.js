@@ -22,6 +22,26 @@ function load() {
   try { const o = JSON.parse(localStorage.getItem(KEY) || "null"); S = o && o.schema === 1 ? Object.assign(fresh(), o) : fresh(); }
   catch (e) { S = fresh(); }
   if (typeof S.dev !== "boolean") S.dev = !!S.ownerToken;   // 開発者の端末は開発者向けの表示から始める
+  S.races.forEach(r => { delete r.pasted; });                // 貼り付けた原文は保存しない（容量の節約。読み取った中身は残る）
+  // エンジンが新しくなったら、この端末の学習を、照合済みのレースから時系列順に作り直す
+  if (!S.model.engineVer || S.model.engineVer < K.ENGINE_VER) {
+    const st = K.replay(doneItems(S.races));
+    S.model = st.model; S.acc = st.acc; S.metaLog = st.metaLog.concat([{ at: new Date().toISOString(), race: st.stats.races, ver: st.model.ver, ll: 0, lines: [`エンジンを v${K.ENGINE_VER} に更新し、照合済みの${st.stats.races}Rで時系列順に学習し直した`] }]).slice(0, 50);
+  }
+}
+function doneItems(races) { return races.filter(r => r.status === "done").map(r => learningItem(r)).sort(K.chrono); }
+// 過去レース検証用：そのレースより前のレースだけで学習した状態（先読み防止）
+// 前の日までのレースと、同じ日・同じ場の前のレースだけを使う。続きから計算できるときは続きから計算する
+let pastCache = null;
+function beforeRace(a, t) { return a.date < t.date || (a.date === t.date && a.venue === t.venue && Number(a.raceNo) < Number(t.raceNo)); }
+function pastState(meta) {
+  const hist = S.races.filter(r => r.status === "done" && beforeRace(r.meta, meta)).map(r => learningItem(r)).sort(K.chrono);
+  const ids = hist.map(h => h.raceKey);
+  if (pastCache && pastCache.ids.length <= ids.length && pastCache.ids.every((id, i) => ids[i] === id)) {
+    K.replay(hist.slice(pastCache.ids.length), pastCache.state);
+    pastCache.ids = ids;
+  } else pastCache = { ids, state: K.replay(hist) };
+  return pastCache.state;
 }
 function applyDev() { document.body.classList.toggle("simple", !S.dev); $("in-dev").value = S.dev ? "1" : "0"; if (!S.dev && view === "learn") view = "pred"; }
 function headerText() {
@@ -45,14 +65,11 @@ const raceKey = m => `${m.date}|${m.venue}|${m.raceNo}`;
 function pastOrderError(meta) {
   if (!meta.date) return "開催日を読み取れませんでした。出走表の見出し（例「青森競輪 出走表詳細（1R 2026年11月3日 初日）」）も含めて貼り付けてください";
   if (meta.date > todayStr()) return "まだ開催されていないレースは、過去レース検証にできません。「リアルタイム予想」を選んでください";
-  if (S.races.some(r => r.mode === "past" && r.status === "pending")) return "照合していない過去レースがあります。時系列を守るため、先にそのレースの結果を照合してください";
-  const last = S.races.filter(r => r.mode === "past").map(r => r.meta.date).sort().pop();
-  if (last && meta.date < last) return `時系列が逆になります。過去レースは古い順に入れてください（最後に入れたのは ${last}）`;
   return null;
 }
 function modeNote() {
   $("mode-note").textContent = $("in-mode").value === "past"
-    ? "終了したレースを、古い順に1レースずつ進めます（今日の終了レースも入れられます）。確定オッズを含めて貼り、予想を確定してから結果を照合します。結果のページは、予想を確定するまで開かないでください。"
+    ? "終了したレースを検証します（今日の終了レースも入れられます）。予想には、そのレースより前のレースで学習した結果だけを使います。確定オッズを含めて貼り、予想を確定してから結果を照合します。結果のページは、予想を確定するまで開かないでください。"
     : "これから走るレースです。発走前の出走表と、その時点のオッズを貼ってください。オッズを貼った時刻を記録します。今日のレースでも、もう終わったレースなら「過去レース検証」を選んでください。";
 }
 
@@ -197,11 +214,18 @@ $("b-predict").onclick = () => {
     cond: { weather: $("in-weather").value || null, windDir: $("in-winddir").value || null, windStr: $("in-windstr").value || null },
     condSrc: wx ? { ...wx, edited: $("in-weather").value !== wx.auto.weather || $("in-winddir").value !== wx.auto.windDir || $("in-windstr").value !== wx.auto.windStr } : { source: "手入力" },
     marks: r.riders.map(x => ({ no: x.no, mark: x.mark })),   // 予想印は記録だけ（予想には使わない）
-    pasted: $("in-paste").value, status: "pending"
+    status: "pending"
   };
-  const useShared = !!(S.shared && S.shared.model);
-  K.predict(race, useShared ? S.shared.model : S.model, useShared ? S.shared.acc : S.acc, { mode: race.mode });
-  race.modelSource = useShared ? `みんなの学習 v${Number(S.shared.model.ver) || 0}（${Number(S.shared.stats.races) || 0}R・${new Date(S.shared.builtAt).toLocaleString("ja-JP")}時点）` : "この端末の学習";
+  if (race.mode === "past") {
+    // 過去レース検証：みんなの学習は使わない（そのレースより後のデータが入っているため）
+    const st = pastState(race.meta);
+    K.predict(race, st.model, st.acc, { mode: "past" });
+    race.modelSource = `過去レース用の学習（このレースより前の${st.stats.races}Rだけ）`;
+  } else {
+    const useShared = !!(S.shared && S.shared.model);
+    K.predict(race, useShared ? S.shared.model : S.model, useShared ? S.shared.acc : S.acc, { mode: race.mode });
+    race.modelSource = useShared ? `みんなの学習 v${Number(S.shared.model.ver) || 0}（${Number(S.shared.stats.races) || 0}R・${new Date(S.shared.builtAt).toLocaleString("ja-JP")}時点）` : "この端末の学習";
+  }
   race.lockedAt = new Date().toISOString(); race.fp = fingerprint(race);
   S.races.unshift(race); save();
   $("b-predict").disabled = true; draft = null;
@@ -209,6 +233,29 @@ $("b-predict").onclick = () => {
   $("pred-out").innerHTML = predCard(race);
   $("pred-out").scrollIntoView({ behavior: "smooth", block: "start" });
 };
+/* ========== かんたん表示の言い換え ========== */
+const PLAIN = {
+  "級班": "クラス", "2連対率": "2着以内の率", "3連対率": "3着以内の率",
+  "ライン位置の基本力": "並びの位置", "主導権(S・B)": "レースを引っ張る力", "先行争い": "先行争いの影響",
+  "選手コメント": "コメントの意気込み", "競り": "位置の競り合い", "先頭の強さ": "前を走る選手の強さ", "ライン結束": "ラインのまとまり",
+  "車番・枠": "車番", "近況着順": "最近の着順", "調子の流れ": "調子", "年齢・期別": "若さ", "ギヤと変更": "ギヤ", "明け・間隔": "レースの間隔",
+  "周長×決まり手": "このバンクと戦法の相性", "みなし直線": "直線の長さとの相性", "カント": "バンクの傾きとの相性",
+  "場の先行有利度": "この場の逃げやすさ", "当場・周長の成績": "この場での成績", "天候": "天気・風との相性",
+  "グレード適性": "このグレードでの成績", "選手別の蓄積補正": "これまでの成績", "条件別の蓄積補正": "同じ条件での成績"
+};
+const PLAIN_KEYS = Object.keys(PLAIN).sort((a, b) => b.length - a.length);
+function plain(s) {
+  if (S.dev) return s;
+  let t = String(s)
+    .replace(/モデルの見立てが市場より高い（モデル [\d.]+%・市場 [\d.]+%）/, "オッズの人気よりも、このアプリの評価が高い（狙い目）")
+    .replace(/（総合評価(\d+)位）/g, "（このアプリの評価で$1位）")
+    .replace(/が高かったが、重みが足りなかった/, "が良かった。この点を学習に生かします")
+    .replace(/敗因なし。同じ条件で再現できるかを引き続き確かめる/, "予想どおりの決着");
+  // 長い言葉から順に、一度だけ言い換える（言い換えた言葉をもう一度言い換えない）
+  const marks = [];
+  PLAIN_KEYS.forEach((k, i) => { if (t.includes(k)) { t = t.split(k).join(`\u0000${i}\u0000`); marks.push(i); } });
+  return t.replace(/\u0000(\d+)\u0000/g, (_, i) => PLAIN[PLAIN_KEYS[i]]);
+}
 function predCard(r) {
   const m = r.meta;
   return `<div class="card"><div class="bethead"><h2>${esc(m.venue || "")} ${m.raceNo || ""}R ・ ${esc(m.grade || "")} ・ ${r.riders.length}車</h2>${clsPill(r.cls)}</div>
@@ -217,7 +264,7 @@ function predCard(r) {
   <p class="note">予想確定 ${new Date(r.lockedAt).toLocaleString("ja-JP")}<span class="dev"> ・ 指紋 ${r.fp}</span>（あとから変更できません）</p>
   <h3>買い目 ${r.bets.length}点（${r.bets.length * 100}円）</h3>
   ${r.bets.map(b => `<div class="bet"><div class="bethead">${comboHtml(b.c)}<span class="prob"><span class="dev">推定 ${pct(b.p)} ・ </span>${b.odds ? `${b.odds}倍` : ""}<span class="dev">${b.ev != null ? ` ・ 期待値 ${b.ev.toFixed(2)}` : ""}</span></span></div>
-    <div class="why">${b.win.map(x => `<b class="w">勝因</b><span>${esc(x)}</span>`).join("")}${b.risk.map(x => `<b class="l">敗因</b><span>${esc(x)}</span>`).join("")}</div></div>`).join("")}
+    <div class="why">${b.win.map(x => `<b class="w">勝因</b><span>${esc(plain(x))}</span>`).join("")}${b.risk.map(x => `<b class="l">敗因</b><span>${esc(plain(x))}</span>`).join("")}</div></div>`).join("")}
   <details class="dev"><summary>総合評価の順位</summary><div class="tbl">${rankTable(r)}</div></details></div>`;
 }
 function rankTable(r) {
@@ -234,6 +281,16 @@ function renderPending() {
     : `<p class="note">照合を待っているレースはありません。「予想」タブで予想を確定すると、ここに並びます。</p>`;
   document.querySelectorAll("#pending-list .item").forEach(b => b.onclick = () => { sel = S.races.find(r => r.id === b.dataset.id); readRes = null; renderPending(); openRes(); });
 }
+let cancelArmed = false;
+$("b-cancel").onclick = () => {
+  if (!sel) return;
+  if (!cancelArmed) { cancelArmed = true; $("b-cancel").textContent = "もう一度押すと取り消します（元に戻せません）"; setTimeout(() => { cancelArmed = false; $("b-cancel").textContent = "この予想を取り消す"; }, 8000); return; }
+  cancelArmed = false; $("b-cancel").textContent = "この予想を取り消す";
+  sel.status = "cancelled"; sel.cancelledAt = new Date().toISOString(); save();
+  msg("res-msg", "");
+  $("res-out").innerHTML = `<div class="card"><p class="msg ok">${esc(sel.meta.venue)} ${Number(sel.meta.raceNo)}R の予想を取り消しました。成績と学習には入りません。取り消した件数は「成績」に表示されます。</p></div>`;
+  sel = null; readRes = null; $("res-card").classList.add("hide"); renderPending();
+};
 function openRes() {
   $("res-card").classList.remove("hide"); $("b-judge").classList.add("hide"); msg("res-msg", "");
   $("in-result").value = "";
@@ -276,7 +333,7 @@ function resultCard(r, meta) {
     <div><div>${esc(r.meta.venue)} ${r.meta.raceNo}R ${clsPill(r.cls)}</div><div class="note">結果 ${comboHtml(R.order)}${R.popular ? `（${R.popular}番人気）` : ""}</div></div></div>
     <div class="kpis"><div class="kpi"><div class="k">払戻</div><div class="v">${yen(R.ret)}</div></div><div class="kpi"><div class="k">収支</div><div class="v" style="color:${bal >= 0 ? "var(--good)" : "var(--bad)"}">${bal >= 0 ? "+" : ""}${yen(bal)}</div></div></div>
     ${R.analysis.map(a => `<div class="bet"><div class="bethead">${comboHtml(a.c)}<span class="pill ${a.hit ? "kata" : "are"}">${a.hit ? "的中" : "外れ"}</span></div>
-      <div class="why">${a.win.map(x => `<b class="w">勝因</b><span>${esc(x)}</span>`).join("")}${a.lose.map(x => `<b class="l">敗因</b><span>${esc(x)}</span>`).join("")}</div></div>`).join("")}
+      <div class="why">${a.win.map(x => `<b class="w">勝因</b><span>${esc(plain(x))}</span>`).join("")}${a.lose.map(x => `<b class="l">敗因</b><span>${esc(plain(x))}</span>`).join("")}</div></div>`).join("")}
     <p class="note dev">学習に反映：${R.learn.map(esc).join(" ／ ")} ・ モデル v${S.model.ver}</p>
     ${meta ? `<div class="msg warn dev"><b>全体の見直し（${meta.race}R時点）</b><ul class="log">${meta.lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul></div>` : ""}</div>`;
 }
@@ -301,6 +358,7 @@ function renderStats() {
     return { hit, ret: hit && p ? p.pay : 0 };
   });
   const bh = base.filter(x => x.hit).length, bret = base.reduce((a, x) => a + x.ret, 0);
+  const cancelled = S.races.filter(r => r.status === "cancelled").length;
   $("v-stats").innerHTML = `<div class="kpis">
     <div class="kpi"><div class="k">レース数</div><div class="v">${all.n}</div></div>
     <div class="kpi"><div class="k">的中率</div><div class="v">${all.n ? pct(all.h / all.n) : "-"}</div></div>
@@ -312,24 +370,27 @@ function renderStats() {
     <div class="tbl"><table><thead><tr><th></th><th class="n">R</th><th class="n">的中率</th><th class="n">回収率</th></tr></thead><tbody>
     <tr><td>人気順3点</td><td class="n">${base.length}</td><td class="n">${base.length ? pct(bh / base.length) : "-"}</td><td class="n">${base.length ? pct(bret / (base.length * 300)) : "-"}</td></tr></tbody></table></div></div>
   <div class="card dev"><h2>区分・グレード・車立別</h2>${rows.length ? `<div class="tbl"><table><thead><tr><th>区分</th><th>グレード</th><th class="n">車立</th><th class="n">R</th><th class="n">的中率</th><th class="n">回収率</th></tr></thead><tbody>${rows.map(x => `<tr><td>${clsPill(x.k[0])}</td><td>${esc(x.k[1])}</td><td class="n">${x.k[2]}</td><td class="n">${x.o.n}</td><td class="n">${pct(x.o.h / x.o.n)}</td><td class="n">${pct(x.o.ret / x.o.inv)}</td></tr>`).join("")}</tbody></table></div>` : `<p class="note">結果を照合すると、ここに集計されます。</p>`}</div>
+  ${cancelled ? `<p class="note">取り消した予想：${cancelled}件（成績と学習には入っていません）</p>` : ""}
   <div class="card"><h2>最近の結果</h2>${done.length ? `<div class="tbl"><table><thead><tr><th>レース</th><th>結果</th><th></th><th class="n">収支</th></tr></thead><tbody>${done.slice(0, 30).map(r => `<tr><td>${esc(r.meta.date.slice(5))} ${esc(r.meta.venue)}${r.meta.raceNo}R</td><td>${comboHtml(r.result.order)}</td><td><span class="pill ${r.result.hit ? "kata" : "are"}">${r.result.hit ? "的中" : "外れ"}</span></td><td class="n">${(r.result.ret - r.result.inv).toLocaleString()}</td></tr>`).join("")}</tbody></table></div>` : `<p class="note">まだありません。</p>`}</div>`;
 }
 
 /* ========== 学習タブ ========== */
 function renderLearn() {
   const shared = !!(S.shared && S.shared.model);
-  const m = shared ? S.shared.model : S.model, g = m.cells["*|*|*"].w, mx = Math.max(...K.PER.map(e => g[e]), 1);
+  const m = shared ? S.shared.model : S.model, g = m.cells["*|*|*"].w, mx = Math.max(...K.PER.map(e => Math.abs(g[e])), 0.01);
   const logs = shared ? (S.shared.metaLog || []) : S.metaLog;
   const groups = [...new Set(K.ENGINES.map(e => e[2]))];
   $("v-learn").innerHTML = `<div class="card"><h2>${shared ? "みんなの学習" : "この端末の学習"} ・ モデル v${Number(m.ver) || 0}</h2>
     ${shared ? `<p class="note">${Number(S.shared.stats.races) || 0}レースから学習（${new Date(S.shared.builtAt).toLocaleString("ja-JP")}に作成）。見直しはサーバーが1時間ごとに行います。</p>` : ""}
-    <p class="note">集中度β ${m.beta.toFixed(2)} ・ 市場の比重α ${m.alpha.toFixed(2)} ・ スジ決着の補正 ${m.syn.toFixed(2)} ・ 学習率 ${Number(m.lr)}（いま${S.stats.lossStreak}連敗。連敗中は自動で下げます）</p>
+    <p class="note">集中度β ${m.beta.toFixed(2)} ・ 市場の比重α ${m.alpha.toFixed(2)} ・ スジ決着の補正 ${m.syn.toFixed(2)} ・ 2着の補正 ${Number(m.lam2 ?? 1).toFixed(2)} ・ 3着の補正 ${Number(m.lam3 ?? 1).toFixed(2)} ・ 学習率 ${Number(m.lr)}（いま${S.stats.lossStreak}連敗。連敗中は自動で下げます）</p>
+    <p class="note">番組・条件の集中度：${m.kf ? Object.entries({ final: "準決・決勝", tokusen: "特選", ippan: "一般・選抜", seven: "7車立て", rain: "雨", wind: "強風" }).map(([k, l]) => `${l} ${Number(m.kf[k]).toFixed(2)}`).join(" ・ ") : "初期値"}</p>
     <p class="note">区分：1番人気オッズが基準の ${m.th.kataRatio.toFixed(2)} 倍以下で堅め、${m.th.areRatio.toFixed(2)} 倍以上で荒れ</p>
-    <p class="note">偶然に振り回されない仕組み：1回の変化は±10%まで ・ データが少ない条件は上の条件の重みと混ぜる ・ 10Rごとに過去30Rで見直し、悪くなっていたら最良版に戻す</p>
+    <p class="note">偶然に振り回されない仕組み：1回の変化は0.02まで ・ 最初の見立て（事前の重み）へ少しずつ引き戻す ・ データが少ない条件は上の条件の重みと混ぜる ・ 10Rごとに直近30Rで今と最良版を比べ、悪くなっていたら最良版に戻す</p>
+    <p class="note">過去レース検証は、この学習ではなく、そのレースより前のレースだけで毎回学習し直した結果で予想します（先読み防止）。</p>
     ${m.best ? `<p class="note">最良版：v${Number(m.best.ver) || 0}（平均対数尤度 ${m.best.ll.toFixed(3)}）</p>` : ""}
     <div class="btns${shared ? " hide" : ""}"><button class="btn sub" id="b-meta">今すぐ見直す</button><button class="btn sub" id="b-rollback"${m.best ? "" : " disabled"}>最良版に戻す</button></div><div id="learn-msg"></div></div>
-  <div class="card"><h2>36エンジンの重み（全体）</h2><p class="note">「race」はレース全体に効くエンジンで、重みではなく上の集中度・市場の比重・スジ補正で効きます。</p>
-    ${groups.map(gp => `<h3>${gp}</h3><div class="tbl"><table><tbody>${K.ENGINES.filter(e => e[2] === gp).map(e => `<tr><td>${e[0]}</td><td>${e[1]}</td><td style="width:38%">${e[3] === "per" ? `<div class="bar"><span style="width:${(g[e[0]] / mx * 100).toFixed(0)}%"></span></div>` : `<span class="note">race</span>`}</td><td class="n">${e[3] === "per" ? g[e[0]].toFixed(2) : ""}</td></tr>`).join("")}</tbody></table></div>`).join("")}</div>
+  <div class="card"><h2>36エンジンの重み（全体）</h2><p class="note">「race」はレース全体に効くエンジンで、重みではなく上の集中度・市場の比重・スジ補正で効きます。赤い棒は、逆向き（値が高いほど不利）に学習されたエンジンです。</p>
+    ${groups.map(gp => `<h3>${gp}</h3><div class="tbl"><table><tbody>${K.ENGINES.filter(e => e[2] === gp).map(e => `<tr><td>${e[0]}</td><td>${e[1]}</td><td style="width:38%">${e[3] === "per" ? `<div class="bar"><span style="width:${(Math.abs(g[e[0]]) / mx * 100).toFixed(0)}%${g[e[0]] < 0 ? ";background:var(--bad)" : ""}"></span></div>` : `<span class="note">race</span>`}</td><td class="n">${e[3] === "per" ? g[e[0]].toFixed(2) : ""}</td></tr>`).join("")}</tbody></table></div>`).join("")}</div>
   <div class="card"><h2>見直しの記録</h2>${logs.length ? logs.slice(0, 10).map(e => `<details><summary>${Number(e.race) || 0}R時点 ・ v${Number(e.ver) || 0}</summary><ul class="log">${e.lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul></details>`).join("") : `<p class="note">10レース照合するごとに自動で見直します（5R以上あれば手動でもできます）。</p>`}</div>`;
   $("b-meta").onclick = () => { const e = K.metaLoop(S.races, S.model, S.stats); if (!e) { msg("learn-msg", "照合済みのレースが5R以上必要です", "warn"); return; } S.metaLog.unshift(e); save(); renderLearn(); msg("learn-msg", "見直しました", "ok"); };
   $("b-rollback").onclick = () => { if (!m.best) return; m.cells = JSON.parse(JSON.stringify(m.best.cells)); ["beta", "alpha", "syn"].forEach(k => m[k] = m.best[k]); m.ver++; S.metaLog.unshift({ at: new Date().toISOString(), race: S.stats.races, ver: m.ver, ll: m.best.ll, lines: [`手動で最良版 v${m.best.ver} に戻した`] }); save(); renderLearn(); msg("learn-msg", "最良版に戻しました", "ok"); };
@@ -388,7 +449,9 @@ function validShared(j) {
   try {
     const m = j.model, w = m.cells["*|*|*"].w;
     if (![m.ver, m.beta, m.alpha, m.syn, m.lr, j.stats.races].every(x => typeof x === "number" && isFinite(x))) return false;
-    if (!K.PER.every(e => typeof w[e] === "number" && isFinite(w[e]) && w[e] >= 0 && w[e] <= 10)) return false;
+    if (!K.PER.every(e => typeof w[e] === "number" && isFinite(w[e]) && w[e] >= -5 && w[e] <= 10)) return false;
+    if (["lam2", "lam3"].some(k => m[k] != null && !(typeof m[k] === "number" && m[k] > 0 && m[k] <= 1.5))) return false;
+    if (m.kf && !Object.values(m.kf).every(x => typeof x === "number" && x > 0.5 && x < 2)) return false;
     if (m.beta < 0 || m.beta > 5 || m.alpha < 0 || m.alpha > 1) return false;
     if (![m.th.kataRatio, m.th.areRatio, m.th.floor.kata, m.th.floor.std, m.th.floor.are].every(x => typeof x === "number" && isFinite(x))) return false;
     if (m.best && !(typeof m.best.ll === "number" && isFinite(m.best.ll))) return false;

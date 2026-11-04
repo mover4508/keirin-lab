@@ -272,7 +272,7 @@ function rebuild_() {
     if (stats.races % 10 === 0) { var m = KEngine.metaLoop(done, model, stats); if (m) metaLog.unshift(m); }
     if (done.length > 60) done.length = 60;
   });
-  var out = { app: "競輪3連単ラボ", kind: "shared", builtAt: new Date().toISOString(), engineVer: 2,
+  var out = { app: "競輪3連単ラボ", kind: "shared", builtAt: new Date().toISOString(), engineVer: KEngine.ENGINE_VER,
     stats: stats, conflicts: conflicts, model: model, acc: acc, metaLog: metaLog.slice(0, 20) };
   writeModel_(JSON.stringify(out));
   var st = { at: new Date().toISOString(), owner: ownerN, public: publicN, waiting: waiting, conflicts: conflicts,
@@ -296,8 +296,42 @@ const REF = {
     position: "ケイリンログ「ライン番手理論は本当か」https://note.com/keirinlogs/n/n206dfe0dcd31",
     popular: "競輪データ解析「1番人気を買い続けた場合の回収率と的中率（3連単）」2012年〜2023年12月 https://ai-keirin.hatenablog.com/entry/2019/05/18/112019",
     area: "ニコニコ大百科「競輪」（新潟・長野・山梨は関東、南関東は千葉・神奈川・静岡、福井は近畿）",
-    wind: "競輪ブラザー「競輪の天気の影響」https://keirin-brother.com/method/weather/"
+    wind: "競輪ブラザー「競輪の天気の影響」https://keirin-brother.com/method/weather/",
+    homeHead: "競輪ブラザー「競輪の天気の影響」の競輪場別の風向き表（2026-11-04確認。41場とも、左回りの幾何と矛盾なし）",
+    geo: "競輪場のおおよその位置（市町村レベル。天気の取得にだけ使う）",
+    weatherApi: "Open-Meteo（https://open-meteo.com）の気象データ。天気の自動取得にだけ使う"
   },
+  // ホームで向かい風になる風の方角（度。北=0、東=90、南=180、西=270）。ドーム（前橋・小倉）は含めない
+  homeHead: {
+    "函館": 180, "青森": 135, "いわき平": 45, "弥彦": 180, "取手": 225, "宇都宮": 315, "大宮": 90, "西武園": 90,
+    "京王閣": 315, "立川": 270, "松戸": 45, "川崎": 270, "平塚": 225, "小田原": 90, "伊東": 270, "静岡": 225,
+    "名古屋": 315, "岐阜": 270, "大垣": 225, "豊橋": 180, "富山": 90, "松阪": 225, "四日市": 225, "福井": 180,
+    "奈良": 270, "向日町": 90, "和歌山": 45, "岸和田": 315, "玉野": 180, "広島": 135, "防府": 90, "高松": 90,
+    "小松島": 135, "高知": 90, "松山": 315, "久留米": 135, "武雄": 225, "佐世保": 225, "別府": 180, "熊本": 225
+  },
+  // 競輪場のおおよその位置（緯度・経度）
+  geo: {
+    "函館": [41.787, 140.764], "青森": [40.80, 140.74], "いわき平": [37.064, 140.887], "弥彦": [37.700, 138.818],
+    "前橋": [36.401, 139.054], "取手": [35.912, 140.054], "宇都宮": [36.553, 139.881], "大宮": [35.920, 139.635],
+    "西武園": [35.770, 139.446], "京王閣": [35.641, 139.565], "立川": [35.704, 139.399], "松戸": [35.783, 139.905],
+    "川崎": [35.533, 139.704], "平塚": [35.329, 139.344], "小田原": [35.256, 139.152], "伊東": [34.968, 139.093],
+    "静岡": [34.987, 138.392], "名古屋": [35.164, 136.872], "岐阜": [35.420, 136.770], "大垣": [35.369, 136.611],
+    "豊橋": [34.759, 137.368], "富山": [36.746, 137.278], "松阪": [34.565, 136.534], "四日市": [34.971, 136.630],
+    "福井": [36.069, 136.207], "奈良": [34.668, 135.822], "向日町": [34.940, 135.703], "和歌山": [34.224, 135.181],
+    "岸和田": [34.457, 135.385], "玉野": [34.493, 133.946], "広島": [34.364, 132.475], "防府": [34.042, 131.568],
+    "高松": [34.326, 134.050], "小松島": [34.006, 134.592], "高知": [33.546, 133.562], "松山": [33.825, 132.734],
+    "小倉": [33.874, 130.873], "久留米": [33.316, 130.522], "武雄": [33.188, 130.018], "佐世保": [33.166, 129.728],
+    "別府": [33.295, 131.491], "熊本": [32.788, 130.744]
+  },
+  // 発走時刻の目安（開催の時間帯ごとの1Rの発走と、レースの間隔。仮置き）
+  timeBand: {
+    morning: { label: "モーニング", start: "08:30", step: 25 },
+    day: { label: "デイ", start: "11:00", step: 30 },
+    night: { label: "ナイター", start: "15:20", step: 30 },
+    midnight: { label: "ミッドナイト", start: "21:00", step: 25 }
+  },
+  // 天気の判定（仮置き）：降水量0.5mm以上か雨の天気コードで雨、雲量70%以上で曇、風速2m/s未満は風なし、5m/s以上は強風
+  weatherRule: { rainMm: 0.5, cloudPct: 70, calmMs: 2, strongMs: 5 },
 
   // 場：府県、周長(m)、みなし直線(m)、カント(度)、ドーム、逃げ1着率(%)
   venues: {
@@ -444,10 +478,24 @@ const riderId = r => `${r.name}|${r.pref}|${r.ki}`;
 const surname = n => (n || "").slice(0, 2);
 
 /* ========== 新しい状態 ========== */
+// 最初の重み（事前の見立て）。実力・並びを厚く、根拠の薄い仮置きのエンジンを薄くして始める。
+// 学習はこの値から始まり、データが少ないうちはこの値に引き戻される。
+const PRIOR = {
+  E01: 0.35, E02: 0.10, E03: 0.15, E04: 0.15, E05: 0.10,
+  E06: 0.30, E07: 0.20, E08: 0.10, E09: 0.05, E10: 0.05, E11: 0.05, E12: 0.15, E13: 0.10, E14: 0.03,
+  E15: 0.10, E16: 0.05, E17: 0.03, E18: 0.02, E19: 0.05,
+  E20: 0.10, E21: 0.03, E22: 0.03, E23: 0.03, E24: 0.05, E25: 0.05, E26: 0.05, E27: 0.03,
+  E34: 0.05, E35: 0.10, E36: 0.05
+};
+// 番組・条件による集中度の補正（初期値。見直しで調整する）
+const KF0 = { final: 1.1, tokusen: 0.9, ippan: 0.95, seven: 1.05, rain: 1.05, wind: 1.05 };
+const ENGINE_VER = 3;
 function freshModel() {
-  const w = Object.fromEntries(PER.map(e => [e, 1]));
+  const w = Object.fromEntries(PER.map(e => [e, PRIOR[e]]));
   return {
-    ver: 1, beta: 1.2, alpha: 0.5, syn: 0.15, lr: 0.05,
+    ver: 1, engineVer: ENGINE_VER, beta: 1.2, alpha: 0.5, syn: 0.15, lr: 0.05,
+    lam2: 0.85, lam3: 0.7,                 // 2着・3着の補正（人気の選手が2・3着に入りやすく出る偏りを弱める）
+    kf: { ...KF0 },
     cells: { "*|*|*": { w, n: 0 } },
     th: { kataRatio: 0.6, areRatio: 1.6, floor: { kata: 0.04, std: 0.02, are: 0.01 } },
     best: null, history: []
@@ -662,21 +710,26 @@ function effWeights(key, model) {
   return out;
 }
 function combine(Z, w, n) {
-  const tot = PER.reduce((a, e) => a + w[e], 0) || 1;
-  return zscore(Array.from({ length: n }, (_, i) => PER.reduce((a, e) => a + w[e] * (Z[e][i] || 0), 0) / tot));
+  return zscore(Array.from({ length: n }, (_, i) => PER.reduce((a, e) => a + w[e] * (Z[e][i] || 0), 0)));
 }
 
 /* ========== E28 勝ち上がり条件・E29 開催種別：集中度への効き ========== */
-function kindFactor(race) {
-  const k = race.meta.kind || "";
+// レースが当てはまる条件（集中度の補正の対象）
+function kindFlags(race) {
+  const k = race.meta.kind || "", c = race.cond || {};
+  return {
+    final: /準決|決勝/.test(k),                 // 着順条件が厳しい：実力どおりになりやすい
+    tokusen: /初日特選|初特選|特選/.test(k),    // 無事故完走で上がれる：無理をしないので荒れやすい
+    ippan: /一般|選抜/.test(k),
+    seven: race.riders.length <= 7,             // 7車立ては堅め（競輪ブラザー）
+    rain: c.weather === "雨",
+    wind: c.windStr === "強"
+  };
+}
+function kindFactor(race, model) {
+  const kf = (model && model.kf) || KF0, fl = kindFlags(race);
   let f = 1;
-  if (/準決|決勝/.test(k)) f *= 1.1;            // 着順条件が厳しい：実力どおりになりやすい
-  if (/初日特選|初特選|特選/.test(k)) f *= 0.9; // 無事故完走で上がれる：無理をしないので荒れやすい
-  if (/一般|選抜/.test(k)) f *= 0.95;
-  if (race.riders.length <= 7) f *= 1.05;       // 7車立ては堅め（競輪ブラザー）
-  const c = race.cond || {};
-  if (c.weather === "雨") f *= 1.05;            // 雨は堅め
-  if (c.windStr === "強") f *= 1.05;            // 強風は堅め
+  Object.keys(KF0).forEach(k => { if (fl[k]) f *= (kf[k] ?? KF0[k]); });
   return f;
 }
 
@@ -688,15 +741,20 @@ function marketProbs(odds) {
   keys.forEach(k => q[k] /= t);
   return q;
 }
+// 着順の確率（2着・3着は強さを弱めて計算する）
+function strengths(race, comb, model) {
+  const beta = model.beta * kindFactor(race, model), l2 = model.lam2 ?? 1, l3 = model.lam3 ?? 1;
+  return { s1: comb.map(z => Math.exp(beta * z)), s2: comb.map(z => Math.exp(l2 * beta * z)), s3: comb.map(z => Math.exp(l3 * beta * z)) };
+}
 function perms(race, comb, model, LI) {
-  const R = race.riders, beta = model.beta * kindFactor(race);
-  const s = comb.map(z => Math.exp(beta * z)), S0 = s.reduce((a, b) => a + b, 0);
+  const R = race.riders, { s1, s2, s3 } = strengths(race, comb, model);
+  const T1 = s1.reduce((a, b) => a + b, 0), T2 = s2.reduce((a, b) => a + b, 0), T3 = s3.reduce((a, b) => a + b, 0);
   const out = [];
   for (let a = 0; a < R.length; a++) for (let b = 0; b < R.length; b++) {
     if (b === a) continue;
     for (let c = 0; c < R.length; c++) {
       if (c === a || c === b) continue;
-      let p = s[a] / S0 * s[b] / (S0 - s[a]) * s[c] / (S0 - s[a] - s[b]);
+      let p = s1[a] / T1 * s2[b] / (T2 - s2[a]) * s3[c] / (T3 - s3[a] - s3[b]);
       const la = LI[R[a].no], lb = LI[R[b].no], lc = LI[R[c].no];
       // E33 スジ決着の補正：同じラインの前後がそのまま入る組み合わせ
       if (la.li === lb.li && lb.idx === la.idx + 1) p *= 1 + model.syn;
@@ -720,7 +778,7 @@ function perms(race, comb, model, LI) {
 function classify(race, model, P) {
   const cat = category(race), base = refd().popular[cat], th = model.th;
   const odds = Object.values(race.odds || {});
-  const kf = kindFactor(race);
+  const kf = kindFactor(race, model);
   let ratio, why;
   if (odds.length >= 10) {
     const fav = Math.min(...odds);
@@ -803,7 +861,7 @@ function predict(race, model, acc, opts) {
   race.top = P.slice(0, 10).map(x => ({ c: x.c, p: x.p }));
   race.bets = chooseBets(race, P, model).map(b => ({ ...b, ...reasons(race, E, b) }));
   race.hasOdds = Object.keys(race.odds || {}).length >= 10;
-  race.modelVer = model.ver; race.kindFactor = kindFactor(race);
+  race.modelVer = model.ver; race.kindFactor = kindFactor(race, model);
   return race;
 }
 
@@ -837,17 +895,34 @@ function judge(race, result) {
 
 /* ========== 学習 ========== */
 function ema(map, k, x, a) { const o = map[k] || { v: 0, n: 0 }; o.v = o.v + a * (x - o.v); o.n++; map[k] = o; }
+// 実際の着順（1〜3着）が出る確率の対数。重みの学習に使う
+function orderLogLik(race, w, model, order) {
+  const n = race.riders.length, comb = combine(race.Z, w, n), { s1, s2, s3 } = strengths(race, comb, model);
+  const ix = order.slice(0, 3).map(no => race.riders.findIndex(r => r.no === no));
+  if (ix.some(i => i < 0)) return null;
+  const [a, b, c] = ix, T1 = s1.reduce((x, y) => x + y, 0), T2 = s2.reduce((x, y) => x + y, 0), T3 = s3.reduce((x, y) => x + y, 0);
+  return Math.log(s1[a] / T1) + Math.log(s2[b] / (T2 - s2[a])) + Math.log(s3[c] / (T3 - s3[a] - s3[b]));
+}
+const STEP_MAX = 0.02, PULL = 0.02, W_MIN = -0.5, W_MAX = 1.5;
 function learn(race, result, model, acc, stats) {
   const order = result.order, n = race.riders.length;
-  const t = race.riders.map(r => r.no === order[0] ? 1 : r.no === order[1] ? 0.7 : r.no === order[2] ? 0.5 : 0);
   const lr = model.lr / (1 + 0.2 * (stats.lossStreak || 0));   // 連敗中は学習率を下げる
   const levels = [race.key, `*|*|${race.cls}`, "*|*|*"], moved = [];
+  // 予想確率全体が実際の着順に近づく向き（対数尤度の勾配）を、全エンジン同時に求める
+  const w0 = effWeights(race.key, model), h = 0.01, grad = {};
+  const base = orderLogLik(race, w0, model, order);
+  if (base != null) PER.forEach(e => {
+    const up = orderLogLik(race, { ...w0, [e]: w0[e] + h }, model, order), dn = orderLogLik(race, { ...w0, [e]: w0[e] - h }, model, order);
+    grad[e] = (up - dn) / (2 * h);
+  });
   for (const lv of levels) {
     if (!model.cells[lv]) model.cells[lv] = { w: { ...effWeights(lv === "*|*|*" ? "*|*|*" : race.key, model) }, n: 0 };
     const c = model.cells[lv];
     PER.forEach(e => {
-      const sig = corr(race.Z[e], t), f = clamp(lr * sig * 2, -0.1, 0.1), old = c.w[e];   // 1回の変化は±10%まで
-      c.w[e] = clamp(old * (1 + f), 0.05, 3);
+      const old = c.w[e], prior = PRIOR[e] ?? old;
+      // 1回の変化は0.02まで。事前の見立てへ少しずつ引き戻す（偶然に振り回されない）
+      const d = clamp(lr * (grad[e] || 0) - PULL * lr * 10 * (old - prior), -STEP_MAX, STEP_MAX);
+      c.w[e] = clamp(old + d, W_MIN, W_MAX);
       if (lv === "*|*|*") moved.push({ e, d: c.w[e] - old });
     });
     c.n++;
@@ -860,7 +935,9 @@ function learn(race, result, model, acc, stats) {
   race.riders.forEach(r => {
     const id = riderId(r), top3 = order.includes(r.no) ? 1 : 0;
     const a = acc.riders[id] || (acc.riders[id] = { n: 0, t3: 0, venue: {}, len: {}, grade: {}, kim: {} });
-    a.n++; a.t3 += top3; a.lastScore = r.score; a.lastGear = r.gear; a.lastDate = race.meta.date;
+    a.n++; a.t3 += top3;
+    // 前回の得点・ギヤは、より新しい日付のレースのときだけ書き換える（古いレースをあとから入れても崩れない）
+    if (!a.lastDate || race.meta.date >= a.lastDate) { a.lastScore = r.score; a.lastGear = r.gear; a.lastDate = race.meta.date; }
     const inc = (o, k) => { o[k] = o[k] || { n: 0, t3: 0 }; o[k].n++; o[k].t3 += top3; };
     inc(a.venue, race.meta.venue); inc(a.len, bc); inc(a.grade, race.meta.grade);
     const f = fin[r.no]; if (f && f.kimarite) a.kim[f.kimarite] = (a.kim[f.kimarite] || 0) + 1;
@@ -906,31 +983,59 @@ function metaLoop(races, model, stats) {
   if (done.length < 5) return null;
   const avg = m => done.reduce((a, r) => a + logLik(r, m), 0) / done.length;
   const lines = []; let cur = avg(model);
-  // 再実装：悪化していたら最良版へ戻す
-  if (model.best && cur < model.best.ll - 0.05) {
-    model.cells = JSON.parse(JSON.stringify(model.best.cells));
-    ["beta", "alpha", "syn"].forEach(k => model[k] = model.best[k]);
-    lines.push(`直すべきもの：予測力が下がった（${cur.toFixed(3)} < ${model.best.ll.toFixed(3)}）ため最良版 v${model.best.ver} に戻した`);
-    cur = avg(model);
+  const KEYS = ["beta", "alpha", "syn", "lam2", "lam3"];
+  const snap = () => ({ ver: model.ver, cells: JSON.parse(JSON.stringify(model.cells)), kf: { ...(model.kf || KF0) }, ...Object.fromEntries(KEYS.map(k => [k, model[k]])) });
+  // 再実装：最良版と今を「同じ直近のレース」で測り直して比べ、悪化していたら最良版へ戻す
+  if (model.best && model.best.cells) {
+    const bm = { ...model, ...model.best, kf: model.best.kf || model.kf, th: model.th };
+    KEYS.forEach(k => { if (bm[k] == null) bm[k] = model[k]; });
+    const bl = avg(bm);
+    if (cur < bl - 0.05) {
+      model.cells = JSON.parse(JSON.stringify(model.best.cells)); model.kf = { ...bm.kf };
+      KEYS.forEach(k => model[k] = bm[k]);
+      lines.push(`直すべきもの：同じ${done.length}Rで比べて予測力が下がった（${cur.toFixed(3)} < ${bl.toFixed(3)}）ため最良版 v${model.best.ver} に戻した`);
+      cur = avg(model);
+    } else model.best.ll = bl;
   }
-  // 調整：集中度β・市場の比重α・スジ補正を少しずつ探る
+  // 調整：集中度β・市場の比重α・スジ補正・2着/3着の補正を少しずつ探る
   const tune = (k, steps, lo, hi, label) => {
-    let bestV = model[k], bestL = cur;
-    for (const d of steps) { const val = clamp(model[k] + d, lo, hi); const L = avg({ ...model, [k]: val }); if (L > bestL + 0.002) { bestL = L; bestV = val; } }
-    if (bestV !== model[k]) { lines.push(`調整すべきもの：${label} ${model[k].toFixed(2)} → ${bestV.toFixed(2)}`); model[k] = bestV; cur = bestL; }
+    const v0 = model[k] ?? (k === "lam2" ? 0.85 : k === "lam3" ? 0.7 : 0);
+    let bestV = v0, bestL = cur;
+    for (const d of steps) { const val = clamp(v0 + d, lo, hi); const L = avg({ ...model, [k]: val }); if (L > bestL + 0.002) { bestL = L; bestV = val; } }
+    if (bestV !== v0) { lines.push(`調整すべきもの：${label} ${v0.toFixed(2)} → ${bestV.toFixed(2)}`); cur = bestL; }
+    model[k] = bestV;
   };
   tune("beta", [-0.15, 0.15], 0.5, 2.5, "集中度β");
   if (done.some(r => r.hasOdds)) tune("alpha", [-0.1, 0.1], 0.1, 0.9, "市場の比重α");
   tune("syn", [-0.05, 0.05], 0, 0.5, "スジ決着の補正");
-  if (!model.best || cur >= model.best.ll) model.best = { ver: model.ver, ll: cur, beta: model.beta, alpha: model.alpha, syn: model.syn, cells: JSON.parse(JSON.stringify(model.cells)) };
+  tune("lam2", [-0.05, 0.05], 0.5, 1, "2着の補正");
+  tune("lam3", [-0.05, 0.05], 0.4, 1, "3着の補正");
+  // 番組・条件の補正：その条件のレースが3R以上あるときだけ調整する
+  model.kf = { ...KF0, ...(model.kf || {}) };
+  const KFL = { final: "準決・決勝", tokusen: "特選", ippan: "一般・選抜", seven: "7車立て", rain: "雨", wind: "強風" };
+  Object.keys(KF0).forEach(k => {
+    if (done.filter(r => kindFlags(r)[k]).length < 3) return;
+    const v0 = model.kf[k]; let bestV = v0, bestL = cur;
+    for (const d of [-0.05, 0.05]) { const val = clamp(v0 + d, 0.8, 1.25); const L = avg({ ...model, kf: { ...model.kf, [k]: val } }); if (L > bestL + 0.002) { bestL = L; bestV = val; } }
+    if (bestV !== v0) { lines.push(`調整すべきもの：${KFL[k]}の集中度 ${v0.toFixed(2)} → ${bestV.toFixed(2)}`); model.kf[k] = bestV; cur = bestL; }
+  });
+  if (!model.best || !model.best.cells || cur >= model.best.ll) model.best = { ...snap(), ll: cur };
   // 区分しきい値
   const by = {}; done.forEach(r => { const o = by[r.cls] || (by[r.cls] = { n: 0, h: 0, inv: 0, ret: 0 }); o.n++; o.h += r.result.hit ? 1 : 0; o.inv += r.result.inv; o.ret += r.result.ret; });
   const hr = k => by[k] && by[k].n ? by[k].h / by[k].n : null;
   if (by.kata && by.kata.n >= 10 && by.std && hr("kata") < hr("std")) { model.th.kataRatio = Math.max(0.3, model.th.kataRatio - 0.05); lines.push(`調整すべきもの：堅めの判定を厳しく（基準比 ${model.th.kataRatio.toFixed(2)} 以下）`); }
   if (by.are && by.are.n >= 15 && hr("are") < 0.03) { model.th.areRatio = Math.min(3, model.th.areRatio + 0.1); lines.push(`調整すべきもの：荒れの判定を厳しく（基準比 ${model.th.areRatio.toFixed(2)} 以上）`); }
-  const g = model.cells["*|*|*"].w, sorted = [...PER].sort((a, b) => g[b] - g[a]);
+  // 期待値で選ぶ区分（標準・荒れ）：回収率が低いときは、穴に寄りすぎないよう確率の下限を上げる
+  [["std", 0.05], ["are", 0.03]].forEach(([k, cap]) => {
+    const o = by[k];
+    if (o && o.n >= 15 && o.inv && o.ret / o.inv < 0.6 && model.th.floor[k] < cap) {
+      model.th.floor[k] = Math.min(cap, +(model.th.floor[k] * 1.25).toFixed(4));
+      lines.push(`調整すべきもの：${CLS_LABEL[k]}の回収率 ${(o.ret / o.inv * 100).toFixed(0)}%。穴に寄りすぎないよう、選ぶ確率の下限を ${(model.th.floor[k] * 100).toFixed(1)}% に上げた`);
+    }
+  });
+  const g = model.cells["*|*|*"].w, sorted = [...PER].sort((a, b) => Math.abs(g[b]) - Math.abs(g[a]));
   lines.push(`増やすべきもの：${sorted.slice(0, 3).map(e => NAME[e]).join("・")}（重み上位）`);
-  const floor = PER.filter(e => g[e] <= 0.15);
+  const floor = PER.filter(e => Math.abs(g[e]) < 0.01);
   lines.push(floor.length ? `削除すべきもの：${floor.map(e => NAME[e]).join("・")}は寄与が小さく実質停止中` : "削除すべきもの：該当なし");
   const recent = races.slice(0, 10), miss = [];
   if (!recent.some(r => r.hasOdds)) miss.push("オッズ（市場の合成が休止）");
@@ -942,7 +1047,30 @@ function metaLoop(races, model, stats) {
   return { at: new Date().toISOString(), race: stats.races, ver: model.ver, ll: cur, lines };
 }
 
-const API = { ENGINES, PER, NAME, CLS_LABEL, catName, freshModel, freshAcc, category, lineInfo, posLabel, riderId,
+/* ========== 時系列順に最初から学習し直す ==========
+   items：照合済みレース（meta, riders, lineup, odds, cond, oddsType, result{order,pays,finishers}）。古い順に並べて渡す */
+function chrono(a, b) { return a.meta.date < b.meta.date ? -1 : a.meta.date > b.meta.date ? 1 : (a.meta.raceNo || 0) - (b.meta.raceNo || 0); }
+// state を渡すと、その続きから学習する（同じ順番なら、最初からやり直したのと同じ結果になる）
+function replay(items, state) {
+  const st = state || { model: freshModel(), acc: freshAcc(), stats: { races: 0, hits: 0, invested: 0, returned: 0, lossStreak: 0 }, done: [], metaLog: [] };
+  const { model, acc, stats, done, metaLog } = st;
+  items.forEach(it => {
+    const race = { id: it.raceKey || it.id, meta: it.meta, riders: it.riders, lineup: it.lineup, odds: it.odds, cond: it.cond, oddsType: it.oddsType };
+    predict(race, model, acc, { mode: "past" });
+    const res = { order: it.result.order, trifecta: it.result.pays, finishers: it.result.finishers };
+    const j = judge(race, res);
+    race.result = j; race.status = "done";
+    stats.races++; stats.invested += j.inv; stats.returned += j.ret;
+    if (j.hit) { stats.hits++; stats.lossStreak = 0; } else stats.lossStreak++;
+    learn(race, res, model, acc, stats);
+    done.unshift(race);
+    if (stats.races % 10 === 0) { const m = metaLoop(done, model, stats); if (m) metaLog.unshift(m); }
+    if (done.length > 60) done.length = 60;
+  });
+  return st;
+}
+
+const API = { ENGINES, PRIOR, ENGINE_VER, chrono, replay, kindFlags, PER, NAME, CLS_LABEL, catName, freshModel, freshAcc, category, lineInfo, posLabel, riderId,
   computeEngines, effWeights, combine, perms, classify, chooseBets, predict, judge, learn, metaLoop, kindFactor };
 if (typeof module !== "undefined") module.exports = API; else root.KEngine = API;
 })(typeof window !== "undefined" ? window : globalThis);
