@@ -61,7 +61,7 @@ const PRIOR = {
 };
 // 番組・条件による集中度の補正（初期値。見直しで調整する）
 const KF0 = { final: 1.1, tokusen: 0.9, ippan: 0.95, seven: 1.05, rain: 1.05, wind: 1.05 };
-const ENGINE_VER = 4;
+const ENGINE_VER = 5;
 function freshModel() {
   const w = Object.fromEntries(PER.map(e => [e, PRIOR[e]]));
   return {
@@ -96,9 +96,12 @@ function lineInfo(race) {
 const posLabel = li => li.size === 1 ? "単騎" : li.idx === 0 ? "先頭" : li.idx === 1 ? "番手" : "3番手以降";
 
 /* ========== 決まり手の割合（選手ごと） ========== */
-function shares(r) {
-  const t = (r.nige || 0) + (r.makuri || 0) + (r.sashi || 0) + (r.mark2 || 0);
-  if (t > 0) return { nige: (r.nige || 0) / t, makuri: (r.makuri || 0) / t, sashi: (r.sashi || 0) / t, mark: (r.mark2 || 0) / t };
+// ar：この選手の蓄積データ（照合で記録した実際の決まり手。そのレースより前のものだけ）
+function shares(r, ar) {
+  const k = (ar && ar.kim) || {};
+  const nige = (r.nige || 0) + (k["逃げ"] || 0), makuri = (r.makuri || 0) + (k["捲り"] || 0), sashi = (r.sashi || 0) + (k["差し"] || 0), mark = (r.mark2 || 0) + (k["マーク"] || 0);
+  const t = nige + makuri + sashi + mark;
+  if (t > 0) return { nige: nige / t, makuri: makuri / t, sashi: sashi / t, mark: mark / t };
   return r.style === "逃" ? { nige: .6, makuri: .3, sashi: .1, mark: 0 } : r.style === "両" ? { nige: .3, makuri: .4, sashi: .2, mark: .1 } : { nige: 0, makuri: .1, sashi: .5, mark: .4 };
 }
 
@@ -119,7 +122,8 @@ function computeEngines(race, acc, opts) {
   const cond = race.cond || {};
   const raw = Object.fromEntries(PER.map(e => [e, R.map(() => null)]));
   const byNo = Object.fromEntries(R.map(r => [r.no, r]));
-  const sh = R.map(shares);
+  const A0 = acc || freshAcc();
+  const sh = R.map(r => shares(r, A0.riders[riderId(r)]));
   const selfHeads = R.filter(r => LI[r.no].idx === 0 && (r.style === "逃" || r.style === "両") && ((r.b || 0) + (r.s || 0)) > 0);
   const zKi = zscore(R.map(r => r.ki)), zAge = zscore(R.map(r => r.age));
 
@@ -182,7 +186,9 @@ function computeEngines(race, acc, opts) {
     if (li.size === 1) raw.E13[i] = 0;
     else {
       const mates = li.line.filter(x => x !== r.no).map(x => byNo[x]);
-      const pairBonus = mates.reduce((t, m) => { const p = A.pairs[[id, riderId(m)].sort().join(">")]; return t + (p ? Math.min(1, p.n / 5) * 0.3 : 0); }, 0);
+      // 同じ並びの実績：そろって3着内に入った率を、ふつうの率（2人とも3着内に入る確率）に縮めて比べる
+      const base2 = (3 / n) * (2 / (n - 1));
+      const pairBonus = mates.reduce((t, m) => { const p = A.pairs[[id, riderId(m)].sort().join(">")]; return t + (p ? clamp(((p.both3 || 0) + base2 * 3) / (p.n + 3) - base2, -0.3, 0.3) * 2 : 0); }, 0);
       raw.E13[i] = mean(mates.map(m => bond(r, m))) + pairBonus;
     }
     // E14 車番・枠（番組編成の評価・内枠の有利）
@@ -269,13 +275,25 @@ function window_parseRecent(s) {
 }
 
 /* ========== 重み（条件別・階層で混ぜる） ========== */
-function cellKey(race) { return `${race.meta.grade || "?"}|${race.riders.length}|${race.cls || "std"}`; }
+// 重みの条件：級の種類 → 区分 → グレード・車立 の順に細かくなる（例 "C:S|FI|7|std"）
+function cellKey(race) { return `C:${race.cat || category(race)}|${race.meta.grade || "?"}|${race.riders.length}|${race.cls || "std"}`; }
+// 全体（*|*|*）の下にある、その条件までの段階
+function chain(key) {
+  if (key === "*|*|*") return [];
+  if (key.startsWith("C:")) {
+    const p = key.slice(2).split("|");
+    if (p.length === 1) return [key];
+    if (p.length === 2) return [`C:${p[0]}`, key];
+    return [`C:${p[0]}`, `C:${p[0]}|${p[3]}`, key];
+  }
+  return [`*|*|${key.split("|")[2]}`, key];   // 以前の形（級の種類を分けていなかったころ）
+}
 function effWeights(key, model) {
-  const k3 = key.split("|")[2], glob = model.cells["*|*|*"];
+  const glob = model.cells["*|*|*"];
   const out = {};
   PER.forEach(e => {
     let w = glob.w[e] ?? 1;
-    for (const lv of [`*|*|${k3}`, key]) {
+    for (const lv of chain(key)) {
       const c = model.cells[lv];
       if (c && c.w[e] != null) { const a = c.n / (c.n + 30); w = a * c.w[e] + (1 - a) * w; }
     }
@@ -421,7 +439,7 @@ function reasons(race, E, bet) {
 function predict(race, model, acc, opts) {
   const cat = category(race);
   // 区分の前に、仮の重みで確率を出す（オッズなし時の区分判定に使う）
-  race.cls = "std";
+  race.cls = "std"; race.cat = cat;
   let w = effWeights(cellKey(race), model);
   let E = computeEngines(race, acc, opts);
   let comb = combine(E.Z, w, race.riders.length);
@@ -482,7 +500,7 @@ const STEP_MAX = 0.02, PULL = 0.02, W_MIN = -0.5, W_MAX = 1.5;
 function learn(race, result, model, acc, stats) {
   const order = result.order, n = race.riders.length;
   const lr = model.lr / (1 + 0.2 * (stats.lossStreak || 0));   // 連敗中は学習率を下げる
-  const levels = [race.key, `*|*|${race.cls}`, "*|*|*"], moved = [];
+  const levels = [...chain(race.key).reverse(), "*|*|*"], moved = [];
   // 予想確率全体が実際の着順に近づく向き（対数尤度の勾配）を、全エンジン同時に求める
   const w0 = effWeights(race.key, model), h = 0.01, grad = {};
   const base = orderLogLik(race, w0, model, order);
@@ -491,7 +509,7 @@ function learn(race, result, model, acc, stats) {
     grad[e] = (up - dn) / (2 * h);
   });
   for (const lv of levels) {
-    if (!model.cells[lv]) model.cells[lv] = { w: { ...effWeights(lv === "*|*|*" ? "*|*|*" : race.key, model) }, n: 0 };
+    if (!model.cells[lv]) model.cells[lv] = { w: { ...effWeights(lv, model) }, n: 0 };
     const c = model.cells[lv];
     PER.forEach(e => {
       const old = c.w[e], prior = PRIOR[e] ?? old;
@@ -655,7 +673,7 @@ function replay(items, state) {
     learn(race, res, model, acc, stats);
     done.unshift(race);
     if (stats.races % 10 === 0) { const m = metaLoop(done, model, stats); if (m) metaLog.unshift(m); }
-    if (done.length > 60) done.length = 60;
+    if (done.length > 30) done.length = 30;
   });
   return st;
 }

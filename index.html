@@ -29,6 +29,7 @@
 <main>
 <!-- 予想 -->
 <section class="view" id="v-pred">
+  <div id="backup-note"></div>
   <div class="card">
     <h2>出走表とオッズを貼り付け</h2>
     <div class="row">
@@ -100,7 +101,7 @@
     <div id="res-msg"></div>
     <button class="btn hide" id="b-judge">照合して学習する</button>
     <button class="btn danger" id="b-cancel">この予想を取り消す</button>
-    <p class="note">貼り間違えたレースや、中止で結果がないレースだけに使ってください。取り消した予想は成績と学習に入りませんが、取り消した件数は「成績」に残ります。同じレースの予想し直しはできません。</p>
+    <p class="note" id="cancel-note">貼り間違えたレースや、中止で結果がないレースだけに使ってください。取り消した予想は成績と学習に入りませんが、取り消した件数は「成績」に残ります。同じレースの予想し直しはできません。</p>
   </div>
   <div id="res-out"></div>
   <div class="card hide" id="join-card">
@@ -118,7 +119,8 @@
 <section class="view hide" id="v-set">
   <div class="card">
     <h2>データの保存</h2>
-    <p class="note">予想・成績・学習の内容は、この端末のブラウザに保存されます。機種変更やブラウザのデータ削除に備えて、ときどきファイルに保存してください。</p>
+    <p class="note">予想・成績・学習の内容は、この端末のブラウザに保存されます。機種変更やブラウザのデータ削除に備えて、ときどきファイルに保存してください（20レースごとに、予想の画面でお知らせします）。</p>
+    <p class="note" id="usage"></p>
     <div class="btns">
       <button class="btn sub" id="b-export">全データを保存</button>
       <button class="btn sub dev" id="b-learnexport">学習用データを保存</button>

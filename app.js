@@ -18,8 +18,28 @@ const KEY = "keirin-lab-v1";
 let S;
 function fresh() { return { schema: 1, model: K.freshModel(), acc: K.freshAcc(), races: [], stats: { races: 0, hits: 0, invested: 0, returned: 0, lossStreak: 0 }, metaLog: [],
   clientId: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2)), join: null, outbox: [], shared: null, ownerToken: "" }; }
-function load() {
-  try { const o = JSON.parse(localStorage.getItem(KEY) || "null"); S = o && o.schema === 1 ? Object.assign(fresh(), o) : fresh(); }
+/* 保存場所：大きく保存できる IndexedDB を使う。使えないときだけ、小さな localStorage を使う */
+let idb = null, useIDB = false;
+function idbOpen() {
+  return new Promise(res => {
+    try {
+      const rq = indexedDB.open("keirin-lab", 1);
+      rq.onupgradeneeded = () => rq.result.createObjectStore("kv");
+      rq.onsuccess = () => res(rq.result); rq.onerror = () => res(null); rq.onblocked = () => res(null);
+    } catch (e) { res(null); }
+  });
+}
+function idbGet(k) { return new Promise(res => { try { const rq = idb.transaction("kv").objectStore("kv").get(k); rq.onsuccess = () => res(rq.result ?? null); rq.onerror = () => res(null); } catch (e) { res(null); } }); }
+function idbPut(k, v) { return new Promise((res, rej) => { try { const tx = idb.transaction("kv", "readwrite"); tx.objectStore("kv").put(v, k); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); tx.onabort = () => rej(tx.error); } catch (e) { rej(e); } }); }
+async function readStore() {
+  idb = await idbOpen(); useIDB = !!idb;
+  let text = useIDB ? await idbGet(KEY) : null, moved = false;
+  if (text == null) { try { text = localStorage.getItem(KEY); moved = text != null && useIDB; } catch (e) { text = null; } }   // 以前の保存場所から引っ越す
+  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}                 // ブラウザに消されにくくする
+  return { text, moved };
+}
+function load(text) {
+  try { const o = JSON.parse(text || "null"); S = o && o.schema === 1 ? Object.assign(fresh(), o) : fresh(); }
   catch (e) { S = fresh(); }
   if (typeof S.dev !== "boolean") S.dev = !!S.ownerToken;   // 開発者の端末は開発者向けの表示から始める
   S.races.forEach(r => { delete r.pasted; });                // 貼り付けた原文は保存しない（容量の節約。読み取った中身は残る）
@@ -48,9 +68,21 @@ function headerText() {
   const sh = S.shared && S.shared.stats ? `みんなの学習 ${S.shared.stats.races}R` : "この端末の学習";
   return `${sh} ・ 自分 ${S.races.length}レース`;
 }
+let saveChain = Promise.resolve();
+function saveFailed() { $("sync").textContent = "保存できませんでした（容量不足の可能性）。「全データを保存」でファイルに残してください"; msg("backup-note", "この端末に保存できませんでした。容量が足りない可能性があります。「保存・説明」の「全データを保存」で、すぐにファイルに残してください。", "err"); }
 function save() {
-  try { localStorage.setItem(KEY, JSON.stringify(S)); $("sync").textContent = headerText(); }
-  catch (e) { $("sync").textContent = "保存できませんでした（容量不足の可能性）。「全データを保存」でファイルに残してください"; }
+  const text = JSON.stringify(S);
+  $("sync").textContent = headerText();
+  if (useIDB) saveChain = saveChain.then(() => idbPut(KEY, text)).catch(saveFailed);   // 順番どおりに書く
+  else { try { localStorage.setItem(KEY, text); } catch (e) { saveFailed(); } }
+  renderBackup();
+}
+// A4：20レース照合するごとに、ファイルへの保存をすすめる
+function renderBackup() {
+  const done = S.races.filter(r => r.status === "done").length, since = done - (S.exportedDone || 0);
+  if (since >= 20) $("backup-note").innerHTML = `<div class="msg warn">前回ファイルに保存してから、${since}レース照合しました。機種変更やデータ削除に備えて、ファイルに保存しておきましょう。<div class="btns"><button class="btn sub" id="b-export2">今すぐ全データを保存</button></div></div>`;
+  else if (!$("backup-note").querySelector(".err")) $("backup-note").innerHTML = "";
+  const b2 = $("b-export2"); if (b2) b2.onclick = exportAll;
 }
 
 /* ========== 予想の固定（指紋） ========== */
@@ -283,6 +315,8 @@ function renderPending() {
   $("pending-list").innerHTML = pend.length ? pend.map(r => `<button class="item" data-id="${r.id}" aria-pressed="${sel && sel.id === r.id}"><span>${esc(r.meta.date)} ${esc(r.meta.venue)} ${r.meta.raceNo}R ${clsPill(r.cls)}</span><span>${r.bets.map(b => b.c.join("")).join(" ・ ")}</span></button>`).join("")
     : `<p class="note">照合を待っているレースはありません。「予想」タブで予想を確定すると、ここに並びます。</p>`;
   document.querySelectorAll("#pending-list .item").forEach(b => b.onclick = () => { sel = S.races.find(r => r.id === b.dataset.id); readRes = null; renderPending(); openRes(); });
+  if (!pend.length) $("res-card").classList.add("hide");
+  else if ($("res-card").classList.contains("hide")) openRes();     // レースを選ばなくても、結果を貼れば自動で選ぶ
 }
 let cancelArmed = false;
 $("b-cancel").onclick = () => {
@@ -294,14 +328,27 @@ $("b-cancel").onclick = () => {
   $("res-out").innerHTML = `<div class="card"><p class="msg ok">${esc(sel.meta.venue)} ${Number(sel.meta.raceNo)}R の予想を取り消しました。成績と学習には入りません。取り消した件数は「成績」に表示されます。</p></div>`;
   sel = null; readRes = null; $("res-card").classList.add("hide"); renderPending();
 };
+function resTitle() {
+  $("res-title").textContent = sel ? `${sel.meta.venue} ${sel.meta.raceNo}R（${sel.meta.date}）の結果` : "結果を貼り付け（どのレースかは自動で選びます）";
+  $("b-cancel").classList.toggle("hide", !sel); $("cancel-note").classList.toggle("hide", !sel);
+}
 function openRes() {
   $("res-card").classList.remove("hide"); $("b-judge").classList.add("hide"); msg("res-msg", "");
   $("in-result").value = "";
-  $("res-title").textContent = `${sel.meta.venue} ${sel.meta.raceNo}R（${sel.meta.date}）の結果`;
+  resTitle();
 }
 $("b-readres").onclick = () => {
   const t = $("in-result").value; if (!t.trim()) { msg("res-msg", "結果ページを貼り付けてください", "err"); return; }
   const r = parseResult(t);
+  if (!sel) {
+    const same = (a, b) => a && b && (a.includes(b) || b.includes(a));
+    const cand = S.races.filter(x => x.status === "pending" && same(x.meta.venue, r.venue) && Number(x.meta.raceNo) === Number(r.raceNo));
+    if (!r.venue || !r.raceNo) { msg("res-msg", "どの場・何レースの結果か読み取れませんでした。結果ページを上から貼り付けるか、上の一覧からレースを選んでください。", "err"); return; }
+    if (cand.length === 0) { msg("res-msg", `照合を待っている予想の中に、${esc(r.venue)} ${Number(r.raceNo)}R がありません。`, "err"); return; }
+    if (cand.length > 1) { msg("res-msg", `${esc(r.venue)} ${Number(r.raceNo)}R の予想が${cand.length}つあります（日付違い）。上の一覧から、どの日のレースかを選んでください。`, "warn"); return; }
+    sel = cand[0]; resTitle();
+    document.querySelectorAll("#pending-list .item").forEach(b => b.setAttribute("aria-pressed", b.dataset.id === sel.id));
+  }
   if (r.venue && sel.meta.venue && !sel.meta.venue.includes(r.venue) && !r.venue.includes(sel.meta.venue)) { msg("res-msg", `貼られた結果は「${esc(r.venue)}」のものです。選んだレース（${esc(sel.meta.venue)}）と違います。`, "err"); return; }
   if (r.raceNo && sel.meta.raceNo && r.raceNo !== sel.meta.raceNo) { msg("res-msg", `貼られた結果は${Number(r.raceNo)}Rのものです。選んだレース（${Number(sel.meta.raceNo)}R）と違います。`, "err"); return; }
   if (!r.order.length) { msg("res-msg", "着順を読み取れませんでした。KEIRIN.JPの結果ページの「着順」の部分を含めて貼り付けてください。", "err"); return; }
@@ -374,7 +421,18 @@ function renderStats() {
     <tr><td>人気順3点</td><td class="n">${base.length}</td><td class="n">${base.length ? pct(bh / base.length) : "-"}</td><td class="n">${base.length ? pct(bret / (base.length * 300)) : "-"}</td></tr></tbody></table></div></div>
   <div class="card dev"><h2>区分・グレード・車立別</h2>${rows.length ? `<div class="tbl"><table><thead><tr><th>区分</th><th>グレード</th><th class="n">車立</th><th class="n">R</th><th class="n">的中率</th><th class="n">回収率</th></tr></thead><tbody>${rows.map(x => `<tr><td>${clsPill(x.k[0])}</td><td>${esc(x.k[1])}</td><td class="n">${x.k[2]}</td><td class="n">${x.o.n}</td><td class="n">${pct(x.o.h / x.o.n)}</td><td class="n">${pct(x.o.ret / x.o.inv)}</td></tr>`).join("")}</tbody></table></div>` : `<p class="note">結果を照合すると、ここに集計されます。</p>`}</div>
   ${cancelled ? `<p class="note">取り消した予想：${cancelled}件（成績と学習には入っていません）</p>` : ""}
+  <div class="card dev"><h2>予想確率の当たり具合</h2><p class="note">買い目に付けた確率どおりに当たっているかを見ます。「予想の合計」と「実際の的中」が近いほど、確率が正確です。</p>${calib(done)}</div>
   <div class="card"><h2>最近の結果</h2>${done.length ? `<div class="tbl"><table><thead><tr><th>レース</th><th>結果</th><th></th><th class="n">収支</th></tr></thead><tbody>${done.slice(0, 30).map(r => `<tr><td>${esc(r.meta.date.slice(5))} ${esc(r.meta.venue)}${r.meta.raceNo}R</td><td>${comboHtml(r.result.order)}</td><td><span class="pill ${r.result.hit ? "kata" : "are"}">${r.result.hit ? "的中" : "外れ"}</span></td><td class="n">${(r.result.ret - r.result.inv).toLocaleString()}</td></tr>`).join("")}</tbody></table></div>` : `<p class="note">まだありません。</p>`}</div>`;
+}
+
+function calib(done) {
+  const bins = [[0, 0.02, "2%未満"], [0.02, 0.05, "2〜5%"], [0.05, 0.1, "5〜10%"], [0.1, 0.2, "10〜20%"], [0.2, 1.01, "20%以上"]];
+  const rows = bins.map(([lo, hi, lab]) => {
+    const bs = done.flatMap(r => r.bets.filter(b => b.p >= lo && b.p < hi).map(b => ({ p: b.p, hit: b.c.join("-") === r.result.order.join("-") })));
+    return { lab, n: bs.length, exp: bs.reduce((a, b) => a + b.p, 0), hit: bs.filter(b => b.hit).length };
+  }).filter(x => x.n);
+  if (!rows.length) return `<p class="note">結果を照合すると、ここに集計されます。</p>`;
+  return `<div class="tbl"><table><thead><tr><th>付けた確率</th><th class="n">買い目</th><th class="n">予想の合計</th><th class="n">実際の的中</th></tr></thead><tbody>${rows.map(x => `<tr><td>${x.lab}</td><td class="n">${x.n}</td><td class="n">${x.exp.toFixed(1)}</td><td class="n">${x.hit}</td></tr>`).join("")}</tbody></table></div>`;
 }
 
 /* ========== 学習タブ ========== */
@@ -405,7 +463,12 @@ function download(name, obj) {
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
 }
-$("b-export").onclick = () => { download(`keirin_lab_${stamp()}.json`, { app: "競輪3連単ラボ", exportedAt: new Date().toISOString(), data: S }); msg("io-msg", "ファイルに保存しました", "ok"); };
+function exportAll() {
+  S.exportedDone = S.races.filter(r => r.status === "done").length; S.exportedAt = new Date().toISOString();
+  download(`keirin_lab_${stamp()}.json`, { app: "競輪3連単ラボ", exportedAt: S.exportedAt, data: S });
+  save(); msg("io-msg", "ファイルに保存しました（スマホの「ダウンロード」フォルダ）", "ok");
+}
+$("b-export").onclick = exportAll;
 $("b-learnexport").onclick = () => {
   const items = S.races.filter(r => r.status === "done").map(r => ({ mode: r.mode, oddsType: r.oddsType, meta: r.meta, riders: r.riders, lineup: r.lineup, odds: r.odds, cond: r.cond, result: { order: r.result.order, pays: r.result.pays, finishers: r.result.finishers } }));
   download(`keirin_lab_learning_${stamp()}.json`, { app: "競輪3連単ラボ", kind: "learning", exportedAt: new Date().toISOString(), items });
@@ -423,7 +486,14 @@ $("in-import").onchange = e => {
 $("b-reset").onclick = () => $("reset-confirm").classList.remove("hide");
 $("b-reset-no").onclick = () => $("reset-confirm").classList.add("hide");
 $("b-reset-yes").onclick = () => { S = fresh(); save(); $("reset-confirm").classList.add("hide"); render(); };
+async function renderUsage() {
+  try {
+    const e = await navigator.storage.estimate();
+    $("usage").textContent = `この端末で使っている容量：約${(e.usage / 1048576).toFixed(1)}MB（${useIDB ? "大きな保存場所" : "小さな保存場所"}を使用中）`;
+  } catch (x) { $("usage").textContent = ""; }
+}
 function renderSet() {
+  renderUsage();
   $("engine-list").innerHTML = `<table><tbody>${K.ENGINES.map(e => `<tr><td>${e[0]}</td><td>${e[2]}</td><td>${e[1]}</td></tr>`).join("")}</tbody></table>`;
 }
 
@@ -550,7 +620,7 @@ $("b-rotate").onclick = async () => {
 $("b-rebuild").onclick = async () => {
   if (!URL_()) { msg("owner-msg", "共有学習のサーバーがまだ設定されていません", "err"); return; }
   msg("owner-msg", "作り直しています…（1分ほどかかることがあります）", "warn");
-  try { const j = await post({ action: "rebuild", ownerToken: S.ownerToken }); msg("owner-msg", j.ok ? `作り直しました：採用 ${Number(j.rebuilt.races) || 0}レース（開発者 ${Number(j.rebuilt.owner) || 0}・みんな ${Number(j.rebuilt.public) || 0}）・確認待ち ${Number(j.rebuilt.waiting) || 0}・食い違い ${Number(j.rebuilt.conflicts) || 0}` : esc(j.reason), j.ok ? "ok" : "err"); if (j.ok) await pullShared(); renderShare(); }
+  try { const j = await post({ action: "rebuild", ownerToken: S.ownerToken, full: true }); msg("owner-msg", j.ok ? `作り直しました：採用 ${Number(j.rebuilt.races) || 0}レース（開発者 ${Number(j.rebuilt.owner) || 0}・みんな ${Number(j.rebuilt.public) || 0}）・確認待ち ${Number(j.rebuilt.waiting) || 0}・食い違い ${Number(j.rebuilt.conflicts) || 0}` : esc(j.reason), j.ok ? "ok" : "err"); if (j.ok) await pullShared(); renderShare(); }
   catch (e) { msg("owner-msg", "通信できませんでした", "err"); }
 };
 
@@ -565,6 +635,12 @@ function render() {
 $("in-mode").onchange = modeNote;
 $("in-dev").onchange = () => { S.dev = $("in-dev").value === "1"; save(); applyDev(); render(); };
 $("b-clear").onclick = () => clearInputs(true);
-load(); applyDev(); modeNote(); save(); render();
-if (URL_()) { flush(); pullShared().then(() => { $("sync").textContent = headerText(); }); }
+(async () => {
+  const { text, moved } = await readStore();
+  load(text); applyDev(); modeNote(); save(); render();
+  if (moved) { await saveChain; try { localStorage.removeItem(KEY); } catch (e) {} }   // 引っ越しが終わったら、古い場所のデータを消す
+  if (URL_()) { flush(); pullShared().then(() => { $("sync").textContent = headerText(); }); }
+  // A5：一度開いたら、電波が弱くてもスマホの中から開けるようにする
+  if ("serviceWorker" in navigator) { try { navigator.serviceWorker.register("sw.js"); } catch (e) {} }
+})();
 })();

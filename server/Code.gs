@@ -104,7 +104,7 @@ function doPost(e) {
     // ----- 開発者だけの操作 -----
     if (body.action === "rebuild" || body.action === "rotateToken" || body.action === "adminStats" || body.action === "block") {
       if (!isOwner) { log_("開発者専用の操作が合言葉なしで試された：" + String(body.action).slice(0, 20)); return json_({ ok: false, reason: "開発者だけが実行できます" }); }
-      if (body.action === "rebuild") return json_({ ok: true, rebuilt: rebuild_() });
+      if (body.action === "rebuild") return json_({ ok: true, rebuilt: rebuild_(!!body.full) });
       if (body.action === "rotateToken") {
         var nt = Utilities.getUuid().replace(/-/g, "") + Utilities.getUuid().replace(/-/g, "");
         props.setProperty("OWNER_TOKEN", nt);
@@ -212,7 +212,24 @@ function unique_(a) { return a.filter(function (x, i) { return a.indexOf(x) === 
 
 /* ========== 学習し直す（時系列順に、最初から） ========== */
 function rebuild() { ensureSetup_(); return rebuild_(); }
-function rebuild_() {
+// 続きから学習するための途中の状態（checkpoint シート）
+function readCheckpoint_() {
+  try {
+    var ss = SpreadsheetApp.openById(PropertiesService.getScriptProperties().getProperty("SHEET_ID")), sh = ss.getSheetByName("checkpoint");
+    if (!sh || !sh.getLastRow()) return null;
+    var cp = JSON.parse(sh.getRange(1, 1, sh.getLastRow(), 1).getValues().map(function (r) { return r[0]; }).join(""));
+    return cp && cp.keys && cp.state ? cp : null;
+  } catch (e) { return null; }
+}
+function writeCheckpoint_(cp) {
+  try {
+    var ss = SpreadsheetApp.openById(PropertiesService.getScriptProperties().getProperty("SHEET_ID")), sh = ss.getSheetByName("checkpoint") || ss.insertSheet("checkpoint");
+    var text = JSON.stringify(cp), rows = [];
+    for (var i = 0; i < text.length; i += CHUNK) rows.push([text.slice(i, i + CHUNK)]);
+    sh.clear(); if (rows.length) sh.getRange(1, 1, rows.length, 1).setNumberFormat("@").setValues(rows);
+  } catch (e) { log_("途中の状態を保存できませんでした（次は最初から学習します）"); }
+}
+function rebuild_(full) {
   var sh = sheet_(), rows = sh.getLastRow() > 1 ? sh.getRange(2, 1, sh.getLastRow() - 1, 6).getValues() : [];
   // レースごとにまとめる
   var groups = {};
@@ -254,27 +271,22 @@ function rebuild_() {
   });
   // 時系列順（開催日・場・レース番号）
   acceptedRaces.sort(function (a, b) { return a.meta.date < b.meta.date ? -1 : a.meta.date > b.meta.date ? 1 : a.meta.raceNo - b.meta.raceNo; });
-  var model = KEngine.freshModel(), acc = KEngine.freshAcc(), stats = { races: 0, hits: 0, invested: 0, returned: 0, lossStreak: 0 };
-  var done = [], metaLog = [];
-  acceptedRaces.forEach(function (it) {
-    var race = { id: it.raceKey, meta: it.meta, riders: it.riders, lineup: it.lineup, odds: it.odds, cond: it.cond, oddsType: it.oddsType };
-    KEngine.predict(race, model, acc, { mode: "past" });   // 共有の学習は、その時点までのデータだけで予想してから学習する
-    var res = { order: it.result.order, trifecta: it.result.pays, finishers: it.result.finishers };
-    var j = KEngine.judge(race, res);
-    race.result = j; race.status = "done";
-    stats.races++; stats.invested += j.inv; stats.returned += j.ret;
-    if (j.hit) { stats.hits++; stats.lossStreak = 0; } else stats.lossStreak++;
-    KEngine.learn(race, res, model, acc, stats);
-    done.unshift(race);
-    if (stats.races % 10 === 0) { var m = KEngine.metaLoop(done, model, stats); if (m) metaLog.unshift(m); }
-    if (done.length > 60) done.length = 60;
-  });
+  // 続きから学習する：前回までに学習したレースの並びが、今回の並びの先頭とそのまま同じなら、増えた分だけ学習する。
+  // 並びが変わった（古い日付のレースが増えた、採用が変わった、エンジンが変わった）ときは、最初から学習し直す。
+  var keys = acceptedRaces.map(function (it) { return it.raceKey; });
+  var cp = full ? null : readCheckpoint_(), st0 = null, from = 0, mode = "最初から";
+  if (cp && cp.engineVer === KEngine.ENGINE_VER && cp.keys.length <= keys.length && cp.keys.every(function (k, i) { return keys[i] === k; })) {
+    st0 = cp.state; from = cp.keys.length; mode = "続きから（" + (keys.length - from) + "R）";
+  }
+  var state = KEngine.replay(acceptedRaces.slice(from), st0);   // 共有の学習は、その時点までのデータだけで予想してから学習する
+  state.metaLog = state.metaLog.slice(0, 50);
+  writeCheckpoint_({ engineVer: KEngine.ENGINE_VER, keys: keys, state: state });
   var out = { app: "競輪3連単ラボ", kind: "shared", builtAt: new Date().toISOString(), engineVer: KEngine.ENGINE_VER,
-    stats: stats, conflicts: conflicts, model: model, acc: acc, metaLog: metaLog.slice(0, 20) };
+    stats: state.stats, conflicts: conflicts, model: state.model, acc: state.acc, metaLog: state.metaLog.slice(0, 20) };
   writeModel_(JSON.stringify(out));
   var st = { at: new Date().toISOString(), owner: ownerN, public: publicN, waiting: waiting, conflicts: conflicts,
     clients: Object.keys(trust).length + Object.keys(bad).length, trusted: Object.keys(trust).filter(trusted).length, excluded: Object.keys(bad).length };
   props.setProperty("LAST_STATS", JSON.stringify(st));
-  log_("学習し直し：開発者 " + ownerN + "R・みんな " + publicN + "R・確認待ち " + waiting + "R・食い違い " + conflicts + "R・除外した送信者 " + st.excluded);
+  log_("学習し直し（" + mode + "）：開発者 " + ownerN + "R・みんな " + publicN + "R・確認待ち " + waiting + "R・食い違い " + conflicts + "R・除外した送信者 " + st.excluded);
   return { races: acceptedRaces.length, conflicts: conflicts, owner: ownerN, public: publicN, waiting: waiting };
 }
