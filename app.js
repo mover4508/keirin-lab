@@ -61,7 +61,13 @@ function pastState(meta) {
     K.replay(hist.slice(pastCache.ids.length), pastCache.state);
     pastCache.ids = ids;
   } else pastCache = { ids, state: K.replay(hist) };
+  if (useIDB) idbPut(PAST_KEY, JSON.stringify({ engineVer: K.ENGINE_VER, ids: pastCache.ids, state: pastCache.state })).catch(() => {});
   return pastCache.state;
+}
+const PAST_KEY = "keirin-lab-past";
+async function loadPastCache() {
+  if (!useIDB) return;
+  try { const o = JSON.parse(await idbGet(PAST_KEY) || "null"); if (o && o.engineVer === K.ENGINE_VER && o.ids && o.state) pastCache = { ids: o.ids, state: o.state }; } catch (e) {}
 }
 function applyDev() { document.body.classList.toggle("simple", !S.dev); $("in-dev").value = S.dev ? "1" : "0"; if (!S.dev && view === "learn") view = "pred"; }
 function headerText() {
@@ -532,9 +538,16 @@ function validShared(j) {
     return !!(j.acc && j.acc.riders && j.acc.resid);
   } catch (e) { return false; }
 }
-async function pullShared() {
+// force でないときは、まず作成日時だけを聞き、変わっていなければ読み込まない（通信量と時間の節約）
+async function pullShared(force) {
   if (!URL_()) return { ok: false, reason: "共有学習のサーバーがまだ設定されていません" };
   try {
+    if (!force && S.shared && S.shared.builtAt) {
+      try {
+        const st = await (await fetch(URL_() + "?action=status", { cache: "no-store" })).json();
+        if (st && st.ok && st.builtAt && st.builtAt === S.shared.builtAt) return { ok: true, same: true };
+      } catch (e) {}
+    }
     const res = await fetch(URL_() + "?action=model", { cache: "no-store" });
     const j = await res.json();
     if (!j || j.kind !== "shared" || !validShared(j)) return { ok: false, reason: j && j.reason ? String(j.reason).slice(0, 80) : "共有モデルを読み込めませんでした" };
@@ -557,7 +570,7 @@ $("in-join").onchange = () => { const v = $("in-join").value; S.join = v === "1"
 $("in-owner").onchange = () => { S.ownerToken = $("in-owner").value.trim(); save(); };
 $("b-sync").onclick = async () => {
   msg("sync-msg", "同期しています…", "warn");
-  const a = await flush(), b = await pullShared();
+  const a = await flush(), b = await pullShared(true);
   msg("sync-msg", [a && (a.ok ? `送信：${a.accepted}レース受け付け${a.rejected && a.rejected.length ? `、${a.rejected.length}レースは受け付けられませんでした（${esc(String(a.rejected[0].reason).slice(0, 60))}）` : ""}` : esc(a.reason)), b.ok ? "みんなの学習を読み込みました" : esc(b.reason)].filter(Boolean).join("<br>"), b.ok ? "ok" : "err");
   renderShare(); save();
 };
@@ -638,6 +651,7 @@ $("b-clear").onclick = () => clearInputs(true);
 (async () => {
   const { text, moved } = await readStore();
   load(text); applyDev(); modeNote(); save(); render();
+  loadPastCache();
   if (moved) { await saveChain; try { localStorage.removeItem(KEY); } catch (e) {} }   // 引っ越しが終わったら、古い場所のデータを消す
   if (URL_()) { flush(); pullShared().then(() => { $("sync").textContent = headerText(); }); }
   // A5：一度開いたら、電波が弱くてもスマホの中から開けるようにする

@@ -366,6 +366,46 @@ function perms(race, comb, model, LI) {
   return out;
 }
 
+// 1つの組み合わせの確率だけを求める（見直しの計算用。perms と同じ順番・同じ式で計算するので、値は完全に同じ）
+// 組み合わせの並び・スジの当てはまり・市場の確率の対数は、レースごとに1回だけ用意しておく（tab）
+function permTab(race, LI, q, target) {
+  const R = race.riders, A = [], B = [], C = [], f1 = [], f2 = [], lq = [];
+  let ti = -1;
+  for (let a = 0; a < R.length; a++) for (let b = 0; b < R.length; b++) {
+    if (b === a) continue;
+    for (let c = 0; c < R.length; c++) {
+      if (c === a || c === b) continue;
+      const la = LI[R[a].no], lb = LI[R[b].no], lc = LI[R[c].no], k = R[a].no + "-" + R[b].no + "-" + R[c].no;
+      if (k === target) ti = A.length;
+      A.push(a); B.push(b); C.push(c);
+      f1.push(la.li === lb.li && lb.idx === la.idx + 1); f2.push(lb.li === lc.li && lc.idx === lb.idx + 1);
+      lq.push(q ? Math.log(q[k] || 1e-5) : 0);
+    }
+  }
+  return { A, B, C, f1, f2, lq, ti, qt: q && ti >= 0 ? (q[target] || 1e-5) : null, ms: new Float64Array(A.length) };
+}
+function permTarget(race, comb, model, tab) {
+  if (tab.ti < 0) return null;
+  const { s1, s2, s3 } = strengths(race, comb, model);
+  const T1 = s1.reduce((a, b) => a + b, 0), T2 = s2.reduce((a, b) => a + b, 0), T3 = s3.reduce((a, b) => a + b, 0);
+  const { A, B, C, f1, f2, lq, ms } = tab, n = A.length, syn1 = 1 + model.syn, syn2 = 1 + model.syn * 0.6;
+  let t = 0;
+  for (let i = 0; i < n; i++) {
+    const a = A[i], b = B[i], c = C[i];
+    let p = s1[a] / T1 * s2[b] / (T2 - s2[a]) * s3[c] / (T3 - s3[a] - s3[b]);
+    if (f1[i]) p *= syn1;
+    if (f2[i]) p *= syn2;
+    ms[i] = p;
+  }
+  for (let i = 0; i < n; i++) t += ms[i];
+  for (let i = 0; i < n; i++) ms[i] /= t;
+  if (tab.qt == null) return { p: ms[tab.ti], m: ms[tab.ti], q: null };
+  let tt = 0, pt = 0;
+  const al = model.alpha, bl = 1 - model.alpha;
+  for (let i = 0; i < n; i++) { const v = Math.exp(al * lq[i] + bl * Math.log(ms[i])); tt += v; if (i === tab.ti) pt = v; }
+  return { p: pt / tt, m: ms[tab.ti], q: tab.qt };
+}
+
 /* ========== 区分（堅め・標準・荒れ） ========== */
 function classify(race, model, P) {
   const cat = category(race), base = refd().popular[cat], th = model.th;
@@ -565,16 +605,26 @@ function learn(race, result, model, acc, stats) {
 }
 
 /* ========== メタループ（10レースごと） ========== */
-function logLik(race, model) {
-  const w = effWeights(race.key, model), comb = combine(race.Z, w, race.riders.length);
-  const P = perms(race, comb, model, lineInfo(race));
-  const f = P.find(x => x.c.join() === race.result.order.join());
+// 見直しの計算で何度も使う値（並び・市場の確率・総合評価）は、レースごとに1回だけ計算して使い回す
+function prep(race, cache) {
+  let e = cache.get(race);
+  if (!e) { const LI = lineInfo(race); e = { tab: permTab(race, LI, marketProbs(race.odds), race.result.order.slice(0, 3).join("-")), cells: null, comb: null }; cache.set(race, e); }
+  return e;
+}
+function combOf(race, model, e) {
+  if (e.cells !== model.cells) { e.comb = combine(race.Z, effWeights(race.key, model), race.riders.length); e.cells = model.cells; }   // 重みが変わったときだけ計算し直す
+  return e.comb;
+}
+function logLik(race, model, cache) {
+  const e = prep(race, cache || new Map());
+  const f = permTarget(race, combOf(race, model, e), model, e.tab);
   return Math.log(f ? f.p : 1e-6);
 }
 function metaLoop(races, model, stats) {
   const done = races.filter(r => r.status === "done").slice(0, 30);
   if (done.length < 5) return null;
-  const avg = m => done.reduce((a, r) => a + logLik(r, m), 0) / done.length;
+  const cache = new Map();
+  const avg = m => done.reduce((a, r) => a + logLik(r, m, cache), 0) / done.length;
   const lines = []; let cur = avg(model);
   const KEYS = ["beta", "alpha", "syn", "lam2", "lam3"];
   const snap = () => ({ ver: model.ver, cells: JSON.parse(JSON.stringify(model.cells)), kf: { ...(model.kf || KF0) }, ...Object.fromEntries(KEYS.map(k => [k, model[k]])) });
@@ -618,8 +668,7 @@ function metaLoop(races, model, stats) {
   if (withOdds.length >= 10) {
     let lm = 0, lq = 0;
     withOdds.forEach(r => {
-      const P = perms(r, combine(r.Z, effWeights(r.key, model), r.riders.length), model, lineInfo(r));
-      const f = P.find(x => x.c.join() === r.result.order.join());
+      const e = prep(r, cache), f = permTarget(r, combOf(r, model, e), model, e.tab);
       lm += Math.log(f ? f.m : 1e-6); lq += Math.log(f && f.q ? f.q : 1e-6);
     });
     lm /= withOdds.length; lq /= withOdds.length;
@@ -678,7 +727,7 @@ function replay(items, state) {
   return st;
 }
 
-const API = { ENGINES, PRIOR, ENGINE_VER, chrono, replay, kindFlags, PER, NAME, CLS_LABEL, catName, freshModel, freshAcc, category, lineInfo, posLabel, riderId,
+const API = { logLik, ENGINES, PRIOR, ENGINE_VER, chrono, replay, kindFlags, PER, NAME, CLS_LABEL, catName, freshModel, freshAcc, category, lineInfo, posLabel, riderId,
   computeEngines, effWeights, combine, perms, classify, chooseBets, predict, judge, learn, metaLoop, kindFactor };
 if (typeof module !== "undefined") module.exports = API; else root.KEngine = API;
 })(typeof window !== "undefined" ? window : globalThis);
