@@ -90,7 +90,7 @@ async function loadPastCache() {
 }
 function applyDev() { document.body.classList.toggle("simple", !S.dev); $("in-dev").value = S.dev ? "1" : "0"; if (!S.dev && view === "learn") view = "pred"; }
 function headerText() {
-  const sh = S.shared && S.shared.stats ? `みんなの学習 ${S.shared.stats.races}R` : "この端末の学習";
+  const sh = S.shared && S.shared.stats ? `共有の学習 ${S.shared.stats.races}R` : "この端末の学習";
   return `${sh} ・ 自分 ${S.races.length}レース`;
 }
 let saveChain = Promise.resolve();
@@ -278,15 +278,16 @@ $("b-predict").onclick = () => {
     status: "pending"
   };
   if (race.mode === "past") {
-    // 過去レース検証：みんなの学習は使わない（そのレースより後のデータが入っているため）
+    // 過去レース検証：共有の学習は使わない（そのレースより後のデータが入っているため）
     const st = pastState(race.meta);
     K.predict(race, st.model, st.acc, { mode: "past" });
     race.modelSource = `過去レース用の学習（このレースより前の${st.stats.races}Rだけ）`;
   } else {
     const useShared = !!(S.shared && S.shared.model);
     K.predict(race, useShared ? S.shared.model : S.model, useShared ? S.shared.acc : S.acc, { mode: race.mode });
-    race.modelSource = useShared ? `みんなの学習 v${Number(S.shared.model.ver) || 0}（${Number(S.shared.stats.races) || 0}R・${new Date(S.shared.builtAt).toLocaleString("ja-JP")}時点）` : "この端末の学習";
+    race.modelSource = useShared ? `共有の学習 v${Number(S.shared.model.ver) || 0}（${Number(S.shared.stats.races) || 0}R・${new Date(S.shared.builtAt).toLocaleString("ja-JP")}時点）` : "この端末の学習";
   }
+  race.engineVer = K.ENGINE_VER;
   race.lockedAt = new Date().toISOString(); race.fp = fingerprint(race);
   slimRace(race);
   S.races.unshift(race); save();
@@ -437,7 +438,7 @@ function renderStats() {
   });
   const bh = base.filter(x => x.hit).length, bret = base.reduce((a, x) => a + x.ret, 0);
   const cancelled = S.races.filter(r => r.status === "cancelled").length;
-  $("v-stats").innerHTML = `${progressCard(done.length)}<div class="kpis">
+  $("v-stats").innerHTML = `${progressCard(done.length)}${honestCard(done)}<div class="kpis">
     <div class="kpi"><div class="k">レース数</div><div class="v">${all.n}</div></div>
     <div class="kpi"><div class="k">的中率</div><div class="v">${all.n ? pct(all.h / all.n) : "-"}</div></div>
     <div class="kpi"><div class="k">回収率</div><div class="v">${all.inv ? pct(all.ret / all.inv) : "-"}</div></div>
@@ -454,6 +455,19 @@ function renderStats() {
   <div class="card"><h2>最近の結果</h2>${done.length ? `<div class="tbl"><table><thead><tr><th>レース</th><th>結果</th><th></th><th class="n">収支</th></tr></thead><tbody>${done.slice(0, 30).map(r => `<tr><td>${esc(r.meta.date.slice(5))} ${esc(r.meta.venue)}${r.meta.raceNo}R</td><td>${comboHtml(r.result.order)}</td><td><span class="pill ${r.result.hit ? "kata" : "are"}">${r.result.hit ? "的中" : "外れ"}</span></td><td class="n">${(r.result.ret - r.result.inv).toLocaleString()}</td></tr>`).join("")}</tbody></table></div>` : `<p class="note">まだありません。</p>`}</div>`;
 }
 
+// 今のエンジン（v6）以降に予想したレースだけで、このアプリと人気順の買い方を比べる（未知のレースでの成績）
+function honestCard(done) {
+  const xs = done.filter(r => (r.engineVer || 0) >= 6 && r.hasOdds);
+  const base = (r, k) => { const top = Object.entries(r.odds).sort((a, b) => a[1] - b[1]).slice(0, k).map(x => x[0]), ok = r.result.order.join("-"), p = (r.result.pays || []).find(x => x.combo.join("-") === ok); return { hit: top.includes(ok), ret: top.includes(ok) && p ? p.pay : 0, inv: k * 100 }; };
+  const sumOf = arr => arr.reduce((a, x) => ({ n: a.n + 1, h: a.h + (x.hit ? 1 : 0), inv: a.inv + x.inv, ret: a.ret + x.ret }), { n: 0, h: 0, inv: 0, ret: 0 });
+  const me = sumOf(xs.map(r => ({ hit: r.result.hit, inv: r.result.inv, ret: r.result.ret }))), b3 = sumOf(xs.map(r => base(r, 3))), b1 = sumOf(xs.map(r => base(r, 1)));
+  const row = (l, o) => `<tr><td>${l}</td><td class="n">${o.n ? o.h : "-"}</td><td class="n">${o.n ? pct(o.h / o.n) : "-"}</td><td class="n">${o.inv ? pct(o.ret / o.inv) : "-"}</td></tr>`;
+  const verdict = xs.length < 50 ? `判定：保留（${xs.length}R。50R未満では、偶然との区別がつきません）` : "判定：50R以上。偶然の幅も含めて、分析で確かめます";
+  return `<div class="card"><h2>効果の確認（今のエンジンで予想したレースだけ）</h2>
+    <p class="note">エンジンの作りや調整に使っていない、新しく予想したレースだけの成績です。このアプリの効果は、ここの数字で判断します。</p>
+    <div class="tbl"><table><thead><tr><th>買い方</th><th class="n">的中</th><th class="n">的中率</th><th class="n">回収率</th></tr></thead><tbody>${row("このアプリ", me)}${row("人気順に3点", b3)}${row("1番人気を1点", b1)}</tbody></table></div>
+    <p class="note">${verdict}</p></div>`;
+}
 function progressCard(n) {
   const goals = [[30, "モデルとオッズの予想力を比べ始める"], [50, "最初の本格的な分析"], [100, "エンジンの整理と、仮置きの値の見直し"]];
   const next = goals.find(g => n < g[0]);
@@ -491,7 +505,7 @@ function renderLearn() {
   const m = shared ? S.shared.model : S.model, g = m.cells["*|*|*"].w, mx = Math.max(...K.PER.map(e => Math.abs(g[e])), 0.01);
   const logs = shared ? (S.shared.metaLog || []) : S.metaLog;
   const groups = [...new Set(K.ENGINES.map(e => e[2]))];
-  $("v-learn").innerHTML = `<div class="card"><h2>${shared ? "みんなの学習" : "この端末の学習"} ・ モデル v${Number(m.ver) || 0}</h2>
+  $("v-learn").innerHTML = `<div class="card"><h2>${shared ? "共有の学習" : "この端末の学習"} ・ モデル v${Number(m.ver) || 0}</h2>
     ${shared ? `<p class="note">${Number(S.shared.stats.races) || 0}レースから学習（${new Date(S.shared.builtAt).toLocaleString("ja-JP")}に作成）。見直しはサーバーが1時間ごとに行います。</p>` : ""}
     <p class="note">集中度β ${m.beta.toFixed(2)} ・ 市場の比重α ${m.alpha.toFixed(2)} ・ スジ決着の補正 ${m.syn.toFixed(2)} ・ 2着の補正 ${Number(m.lam2 ?? 1).toFixed(2)} ・ 3着の補正 ${Number(m.lam3 ?? 1).toFixed(2)} ・ 学習率 ${Number(m.lr)}（いま${S.stats.lossStreak}連敗。連敗中は自動で下げます）</p>
     <p class="note">番組・条件の集中度：${m.kf ? Object.entries({ final: "準決・決勝", tokusen: "特選", ippan: "一般・選抜", seven: "7車立て", rain: "雨", wind: "強風" }).map(([k, l]) => `${l} ${Number(m.kf[k]).toFixed(2)}`).join(" ・ ") : "初期値"}</p>
@@ -547,7 +561,7 @@ function renderSet() {
   $("engine-list").innerHTML = `<table><tbody>${K.ENGINES.map(e => `<tr><td>${e[0]}</td><td>${e[2]}</td><td>${e[1]}</td></tr>`).join("")}</tbody></table>`;
 }
 
-/* ========== みんなの学習（共有学習サーバー） ========== */
+/* ========== 共有の学習（共有学習サーバー） ========== */
 const URL_ = () => window.KEIRIN_SHARED_URL || "";
 function learningItem(r) {
   return { raceKey: r.rkey, oddsType: r.oddsType, meta: r.meta, riders: r.riders.map(({ recent, ...x }) => x), lineup: r.lineup, odds: r.odds, cond: r.cond,
@@ -603,7 +617,7 @@ async function pullShared(force) {
 function renderShare() {
   const st = S.shared;
   $("share-status").innerHTML = !URL_() ? "共有学習のサーバーは準備中です。いまは、この端末の学習だけで予想します。"
-    : st ? `みんなの学習：${Number(st.stats.races) || 0}レース分<span class="dev">・モデル v${Number(st.model.ver) || 0}（${esc(new Date(st.builtAt).toLocaleString("ja-JP"))}に作成）</span>。予想にはこの学習結果を使います。${S.outbox.length ? `<br>送信待ち：${S.outbox.length}レース` : ""}`
+    : st ? `共有の学習：${Number(st.stats.races) || 0}レース分（一般に公開していないため、今は開発者が照合したレースだけで学習しています）<span class="dev">・モデル v${Number(st.model.ver) || 0}（${esc(new Date(st.builtAt).toLocaleString("ja-JP"))}に作成）</span>。予想にはこの学習結果を使います。${S.outbox.length ? `<br>送信待ち：${S.outbox.length}レース` : ""}`
     : "まだ共有モデルを読み込んでいません。「今すぐ同期する」を押してください。";
   $("in-join").value = S.join === true ? "1" : S.join === false ? "0" : "";
   $("in-owner").value = S.ownerToken || "";
@@ -615,7 +629,7 @@ $("in-owner").onchange = () => { S.ownerToken = $("in-owner").value.trim(); save
 $("b-sync").onclick = async () => {
   msg("sync-msg", "同期しています…", "warn");
   const a = await flush(), b = await pullShared(true);
-  msg("sync-msg", [a && (a.ok ? `送信：${a.accepted}レース受け付け${a.rejected && a.rejected.length ? `、${a.rejected.length}レースは受け付けられませんでした（${esc(String(a.rejected[0].reason).slice(0, 60))}）` : ""}` : esc(a.reason)), b.ok ? "みんなの学習を読み込みました" : esc(b.reason)].filter(Boolean).join("<br>"), b.ok ? "ok" : "err");
+  msg("sync-msg", [a && (a.ok ? `送信：${a.accepted}レース受け付け${a.rejected && a.rejected.length ? `、${a.rejected.length}レースは受け付けられませんでした（${esc(String(a.rejected[0].reason).slice(0, 60))}）` : ""}` : esc(a.reason)), b.ok ? "共有の学習を読み込みました" : esc(b.reason)].filter(Boolean).join("<br>"), b.ok ? "ok" : "err");
   renderShare(); save();
 };
 $("b-claim").onclick = async () => {
