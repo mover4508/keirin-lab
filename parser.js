@@ -65,17 +65,23 @@ const VENUE_ALIAS = { "平": "いわき平", "いわき": "いわき平", "伊�
 const venueName = v => VENUE_ALIAS[v] || v;
 
 /* ---------- 近況の成績文字列（例: 予5般2特7 / 予落 / 予2準1決1） ---------- */
+// 成績だけの行か（例「予5般2特7」「初7準5」「一4二6特5特9」「予2落」）。コメントの「1番手」などと区別する
+function isResultLine(s) {
+  const t = String(s || "").replace(/[\s　]/g, "");
+  return t.length > 0 && t.length <= 24 && /^([予準決般特抜選初優一二三順秀ガチ]?([1-9]|落|失|欠|棄|故))+$/.test(t);
+}
 function parseRecent(s) {
   const out = [];
   if (!s) return out;
-  const re = /([予準決般特抜選初優一順特秀ガ選]?)([1-9]|落|失|欠|棄|故)/g; let m;
+  const re = /([予準決般特抜選初優一二三順秀ガチ]?)([1-9]|落|失|欠|棄|故)/g; let m;
   while ((m = re.exec(s))) out.push({ type: m[1] || null, res: /[1-9]/.test(m[2]) ? +m[2] : m[2] });
   return out;
 }
 
 /* ---------- 出走表 ---------- */
 const MARKS = ["◎", "○", "▲", "△", "×", "注", "☆", "★", "穴"];
-function parseEntry(entry) {
+function parseEntry(entry, raceDate) {
+  const raceMD = raceDate ? raceDate.slice(5).replace(/^0/, "").replace("-0", "/").replace("-", "/") : null;   // 例 "11/3"
   const lines = entry.split("\n");
   const riders = [];
   let lineup = [];
@@ -106,20 +112,30 @@ function parseEntry(entry) {
       for (let k = 0; k + 1 < rest.length; k++) {
         if (/^\d{1,2}\/\d{1,2}$/.test(rest[k + 1]) && rest[k]) { meets.push({ venue: venueName(rest[k].replace(/[\s　]/g, "")), date: rest[k + 1], res: rest[k + 2] && !/^\d{1,2}\/\d{1,2}$/.test(rest[k + 3] || "") ? rest[k + 2] : "" }); k++; }
       }
-      // 続く行：前回の成績 → 前々回の場と日付 → 前々回の成績 → コメント
+      // 続く行：成績の行・「場<TAB>日付」の行が開催日によって増減し、最後がコメント
+      // （1日目：前回の成績 → 前々回の場と日付 → 前々回の成績 → コメント。2日目以降は今回開催の成績などで行が増える）
       let j = i + 1; const extra = [];
-      while (j < lines.length && extra.length < 4) {
+      while (j < lines.length && extra.length < 8) {
         const L = lines[j].trim();
         if (!L) { j++; continue; }
         const nc = lines[j].split("\t").map(x => x.trim());
         if (nc.findIndex((x, k) => k > 0 && /^(S[12]|A[1-3]|L1|SS)$/.test(nc[k] || "")) > 0 || /^周回予想/.test(L)) break;
         extra.push(lines[j]); j++;
       }
-      let ex = 0;
-      if (meets.length && !meets[meets.length - 1].res && extra[ex] && !/\t/.test(extra[ex]) && parseRecent(extra[ex]).length) meets[meets.length - 1].res = extra[ex++].trim();
-      if (extra[ex] && /\t\d{1,2}\/\d{1,2}/.test(extra[ex])) { const p = extra[ex++].split("\t").map(x => x.trim()); meets.push({ venue: venueName(p[0].replace(/[\s　]/g, "")), date: p[1], res: "" }); }
-      if (extra[ex] && parseRecent(extra[ex]).length && !/[。、]/.test(extra[ex])) meets[meets.length - 1].res = extra[ex++].trim();
-      if (extra[ex]) r.comment = extra[ex++].trim();
+      // 成績を入れる先：成績が空の開催。ただし、今回開催がこのレースの日から始まる（1日目）なら、今回開催は空のままが正しい
+      const md = x => { const [m, d] = String(x).split("/").map(Number); return m + "/" + d; };
+      const emptyMeet = (mt, k) => !mt.res && !(k === 0 && raceMD && md(mt.date) === raceMD);
+      for (const raw of extra) {
+        const L = raw.trim(), p = raw.split("\t").map(x => x.trim());
+        if (r.comment == null && p.length >= 2 && /^\d{1,2}\/\d{1,2}$/.test(p[1]) && p[0]) {
+          // 「場<TAB>日付（<TAB>成績）」の行：開催を1つ足す
+          meets.push({ venue: venueName(p[0].replace(/[\s　]/g, "")), date: p[1], res: p[2] && isResultLine(p[2]) ? p[2] : "" });
+        } else if (r.comment == null && isResultLine(L) && meets.some(emptyMeet)) {
+          meets.find(emptyMeet).res = L;               // 成績がまだ入っていない、いちばん前の開催の成績
+        } else if (r.comment == null) {
+          r.comment = L;                               // 最初の、どれにも当てはまらない行がコメント
+        }
+      }
       r.meets = meets;
       r.recent = meets.flatMap(mt => parseRecent(mt.res).map(x => ({ ...x, venue: mt.venue, date: mt.date })));
       r.style = { "逃": "逃", "両": "両", "追": "追", "自": "両" }[r.style] || r.style;
@@ -242,7 +258,7 @@ function parsePaste(text) {
   if (leak.length) return { ok: false, leak };
   const { entry, odds } = split(text);
   const meta = parseMeta(entry, odds);
-  const { riders, lineup } = parseEntry(entry);
+  const { riders, lineup } = parseEntry(entry, meta.date);
   const oddsMap = parseOdds(odds);
   meta.cars = riders.length;
   const n = riders.length, need = n * (n - 1) * (n - 2);

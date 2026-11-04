@@ -105,7 +105,10 @@ $("b-parse").onclick = () => {
   const key = raceKey(r.meta);
   if (S.races.some(x => x.rkey === key)) { msg("parse-msg", "このレースの予想はすでに確定しています。予想は1レース1回だけです。", "err"); return; }
   draft = { mode, parsed: r, oddsAt: new Date().toISOString() };
-  msg("parse-msg", `読み取りました：選手${r.riders.length}人・3連単オッズ${Object.keys(r.odds).length}通り${note}`, "ok");
+  const nOdds = Object.keys(r.odds).length, nR = r.riders.length, need = nR * (nR - 1) * (nR - 2);
+  if (nOdds === 0) { msg("parse-msg", `3連単オッズを読み取れませんでした（選手${nR}人は読み取れています）。チャリロトの「オッズ表詳細」のページも、出走表と一緒に貼り付けてください。オッズがないと正しく予想できないため、ここで止めます。`, "err"); return; }
+  if (nOdds < need * 0.5) note += `<br>3連単オッズが${nOdds}通りしか読めていません（${nR}車立てなら${need}通り）。オッズ表を最後まで選んで貼り付けたか確かめてください。`;
+  msg("parse-msg", `読み取りました：選手${nR}人・3連単オッズ${nOdds}通り${note}`, nOdds < need * 0.5 ? "warn" : "ok");
   renderCheck();
   const pt = (text.match(/発走(?:予定)?(?:時刻)?\s*[：:]?\s*(\d{1,2})[:：](\d{2})/) || []);
   $("in-posttime").value = pt[1] ? `${pt[1].padStart(2, "0")}:${pt[2]}` : "";

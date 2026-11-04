@@ -489,11 +489,13 @@ const PRIOR = {
 };
 // 番組・条件による集中度の補正（初期値。見直しで調整する）
 const KF0 = { final: 1.1, tokusen: 0.9, ippan: 0.95, seven: 1.05, rain: 1.05, wind: 1.05 };
-const ENGINE_VER = 3;
+const ENGINE_VER = 4;
 function freshModel() {
   const w = Object.fromEntries(PER.map(e => [e, PRIOR[e]]));
   return {
-    ver: 1, engineVer: ENGINE_VER, beta: 1.2, alpha: 0.5, syn: 0.15, lr: 0.05,
+    // alpha：オッズ（市場）の比重。最初は市場を重く見る（0.8）。モデルの予想力が確かめられたら見直しで下げる
+    // evMode：期待値で選ぶか。モデル単独の予想力がオッズを上回ったと確かめられるまでは false（確率の高い順に選ぶ）
+    ver: 1, engineVer: ENGINE_VER, beta: 1.2, alpha: 0.8, syn: 0.15, lr: 0.05, evMode: false,
     lam2: 0.85, lam3: 0.7,                 // 2着・3着の補正（人気の選手が2・3着に入りやすく出る偏りを弱める）
     kf: { ...KF0 },
     cells: { "*|*|*": { w, n: 0 } },
@@ -808,7 +810,8 @@ function chooseBets(race, P, model) {
     picks.sort((a, b) => b.p - a.p);
     picks = picks.slice(0, P[1] && P[1].p >= P[0].p * 0.6 ? 2 : 1);
   } else {
-    if (has) picks.sort((a, b) => b.ev - a.ev);
+    // 期待値で選ぶのは、モデルの予想力がオッズを上回ったと確かめられてから。それまでは確率の高い順
+    if (has && model.evMode) picks.sort((a, b) => b.ev - a.ev); else picks.sort((a, b) => b.p - a.p);
     picks = picks.slice(0, maxN);
   }
   if (!picks.length) picks = [{ ...P[0], odds: odds[P[0].c.join("-")] || null, ev: null }];
@@ -1006,7 +1009,7 @@ function metaLoop(races, model, stats) {
     model[k] = bestV;
   };
   tune("beta", [-0.15, 0.15], 0.5, 2.5, "集中度β");
-  if (done.some(r => r.hasOdds)) tune("alpha", [-0.1, 0.1], 0.1, 0.9, "市場の比重α");
+  if (done.some(r => r.hasOdds)) tune("alpha", [-0.1, 0.1], 0.1, 0.95, "市場の比重α");
   tune("syn", [-0.05, 0.05], 0, 0.5, "スジ決着の補正");
   tune("lam2", [-0.05, 0.05], 0.5, 1, "2着の補正");
   tune("lam3", [-0.05, 0.05], 0.4, 1, "3着の補正");
@@ -1020,6 +1023,21 @@ function metaLoop(races, model, stats) {
     if (bestV !== v0) { lines.push(`調整すべきもの：${KFL[k]}の集中度 ${v0.toFixed(2)} → ${bestV.toFixed(2)}`); model.kf[k] = bestV; cur = bestL; }
   });
   if (!model.best || !model.best.cells || cur >= model.best.ll) model.best = { ...snap(), ll: cur };
+  // モデル単独とオッズ単独の予想力を、同じレースで比べる。モデルが上回ったときだけ期待値で選ぶ
+  const withOdds = done.filter(r => r.hasOdds);
+  if (withOdds.length >= 10) {
+    let lm = 0, lq = 0;
+    withOdds.forEach(r => {
+      const P = perms(r, combine(r.Z, effWeights(r.key, model), r.riders.length), model, lineInfo(r));
+      const f = P.find(x => x.c.join() === r.result.order.join());
+      lm += Math.log(f ? f.m : 1e-6); lq += Math.log(f && f.q ? f.q : 1e-6);
+    });
+    lm /= withOdds.length; lq /= withOdds.length;
+    const ev = withOdds.length >= 30 && lm > lq + 0.05;
+    lines.push(`予想力の比べ：モデル単独 ${lm.toFixed(2)} ／ オッズ単独 ${lq.toFixed(2)}（${withOdds.length}R）。${ev ? "モデルが上回ったので、標準・荒れは期待値で選ぶ" : "モデルはまだオッズを上回っていないので、確率の高い順に選ぶ"}`);
+    if (ev !== !!model.evMode) lines.push(`調整すべきもの：買い目の選び方を「${ev ? "期待値順" : "確率順"}」に切り替えた`);
+    model.evMode = ev;
+  }
   // 区分しきい値
   const by = {}; done.forEach(r => { const o = by[r.cls] || (by[r.cls] = { n: 0, h: 0, inv: 0, ret: 0 }); o.n++; o.h += r.result.hit ? 1 : 0; o.inv += r.result.inv; o.ret += r.result.ret; });
   const hr = k => by[k] && by[k].n ? by[k].h / by[k].n : null;
